@@ -36,10 +36,15 @@ provFrac = input.float(0.5, "Pivot sementara (× threshold)", minval = 0, maxval
 
 grpS = "Support/Resistance & price action"
 showSR    = input.bool(true, "Zona support/resistance", group = grpS,
-     tooltip = "Zona dari pivot zigzag terkonfirmasi. Hanya zona terdekat di atas & di bawah harga yang ditampilkan. ★EW = berimpit dengan target/level batal Elliott.")
+     tooltip = "Zona dari pivot zigzag terkonfirmasi, dibagi Major dan Minor. Ditampilkan zona terdekat di atas & di bawah harga, plus zona Major terdekat bila tidak termasuk di situ. ★EW = berimpit dengan target/level batal Elliott.")
 srPerSide = input.int(2, "Jumlah zona per sisi", minval = 1, maxval = 5, group = grpS)
 srWidth   = input.float(1.0, "Lebar zona (× ATR)", minval = 0.2, step = 0.1, group = grpS)
-srMinT    = input.int(2, "Minimal sentuhan", minval = 1, maxval = 6, group = grpS)
+srMinT    = input.int(2, "Minimal sentuhan (Minor)", minval = 1, maxval = 6, group = grpS,
+     tooltip = "Zona Minor baru ditampilkan setelah disentuh sebanyak ini. Zona Major tetap ditampilkan walau baru 1 sentuhan.")
+srMajMult = input.float(2.0, "Major: swing pivot ≥ × threshold", minval = 1.0, step = 0.25, group = grpS,
+     tooltip = "Zona Major bila salah satu pivotnya adalah swing besar: kedua leg di kiri & kanan pivot ≥ pengali ini × threshold zigzag (mis. 1W 15% × 2 = 30%). Pivot seperti ini adalah titik balik derajat lebih tinggi. Default 2 ≈ rasio threshold Auto antar-TF (M/W, D/4h, 1h/15m = 2–2.5); 2.5 sudah membuat ATH di Monthly jadi Minor.")
+srMajT    = input.int(5, "Major: minimal sentuhan", minval = 2, maxval = 10, group = grpS,
+     tooltip = "Zona juga Major bila disentuh sebanyak ini, walau swing-nya kecil. Default 5: zona selebar 1 ATR mudah mengumpulkan 3–4 pivot, sehingga dengan 3 hampir semua zona (mis. di 15m) jadi Major.")
 showPA    = input.bool(true, "Price action di zona/level Elliott", group = grpS,
      tooltip = "Engulfing & pin bar hanya ditandai bila terjadi di zona S/R atau dekat target/level batal Elliott.")
 paBars    = input.int(10, "Bar terakhir yang dipindai PA", minval = 1, maxval = 100, group = grpS)
@@ -76,6 +81,8 @@ showZz      = input.bool(false, "Tampilkan zigzag mentah", group = grpV)
 tblCompact  = input.bool(true, "Tabel ringkas", group = grpV,
      tooltip = "Hanya hitungan utama, level batal, dan alternatif. Info HTF, momentum, dan S/R pindah ke tooltip baris pertama.")
 tblPosIn    = input.string("Kiri bawah", "Posisi tabel", options = ["Kanan atas", "Kanan bawah", "Kiri atas", "Kiri bawah"], group = grpV)
+lblGap      = input.float(3.0, "Jarak minimal label (% tinggi chart)", minval = 0.5, step = 0.5, group = grpV,
+     tooltip = "Tinggi satu baris label sebagai persen rentang harga di layar. Label level di kanan yang lebih rapat dari ini digeser ke atas (garis levelnya tetap di harga asli). Dikalibrasi untuk skala harga Auto + 'Skalakan chart harga saja'. Naikkan bila label masih bertumpuk (layar kecil/pane pendek/skala manual), turunkan bila terlalu renggang.")
 colMain     = input.color(#2962FF, "Hitungan utama", group = grpV)
 colAlt      = input.color(color.gray, "Hitungan alternatif", group = grpV)
 colHist     = input.color(#26A69A, "Pola historis", group = grpV)
@@ -854,7 +861,10 @@ pointTip(Count c, array<float> pp, array<float> cp, int k, bool isLive) =>
     t + "\n\nSkor hitungan: " + str.tostring(c.score, "0.00") + (useLog ? " · rasio skala log" : "")
 
 // Pivot yang dipakai kedua hitungan cukup diberi satu label: nama alternatif ditempel di label utama.
-drawCount(Count c, Count other, string startAlias, array<float> pp, array<float> cp, array<int> pb, array<int> pt, color col, bool primary, array<label> labs, array<line> lns) =>
+// bpc = lebar satu karakter dalam bar: label yang teksnya akan melewati bar terakhir (menabrak label level di kanan)
+// ditulis ke arah kiri dari titiknya. bx*/by* = kotak perkiraan label hitungan yang sudah digambar; label alternatif
+// yang menimpa label utama tidak ditulis (garisnya tetap), karena hitungan utama digambar lebih dulu.
+drawCount(Count c, Count other, string startAlias, array<float> pp, array<float> cp, array<int> pb, array<int> pt, color col, bool primary, float bpc, float lineH, array<float> bx1, array<float> bx2, array<float> by1, array<float> by2, array<label> labs, array<line> lns) =>
     for k = 0 to c.m
         int   idx    = c.sel.get(k)
         float y      = pp.get(idx)
@@ -878,8 +888,41 @@ drawCount(Count c, Count other, string startAlias, array<float> pp, array<float>
         string tip = pointTip(c, pp, cp, k, true)
         if k == 0 and startAlias != ""
             tip := "Titik ini juga akhir gelombang " + startAlias + " dari pola historis sebelumnya.\n\n" + tip
-        if primary or oj < 0
-            labs.push(label.new(x, y, txt, style = isHigh ? label.style_label_down : label.style_label_up,
+        float w  = str.length(txt) * bpc * (primary ? 1.2 : 1.0)
+        float lh = lineH * (primary ? 1.2 : 1.0)
+        bool  toLeft = x + w / 2 >= bar_index + 2
+        float l1 = toLeft ? x - w : x - w / 2
+        float l2 = toLeft ? x : x + w / 2
+        float t1 = isHigh ? y : y - lh
+        float t2 = t1 + lh
+        bool  clash = false
+        if not primary and bx1.size() > 0
+            for q = 0 to bx1.size() - 1
+                if l1 < bx2.get(q) and l2 > bx1.get(q) and t1 < by2.get(q) and t2 > by1.get(q)
+                    clash := true
+                    break
+        // Label utama tidak boleh hilang: bila menimpa label utama sebelumnya (dua pivot berdekatan), digeser menjauhi
+        // pivot (ke atas untuk high, ke bawah untuk low) maksimal 4 baris.
+        float yl = y
+        if primary and bx1.size() > 0
+            for tries = 0 to 3
+                bool hitP = false
+                for q = 0 to bx1.size() - 1
+                    if l1 < bx2.get(q) and l2 > bx1.get(q) and t1 < by2.get(q) and t2 > by1.get(q)
+                        hitP := true
+                        break
+                if not hitP
+                    break
+                float d = isHigh ? lh : -lh
+                t1 += d
+                t2 += d
+                yl += d
+        if (primary or oj < 0) and not clash
+            bx1.push(l1)
+            bx2.push(l2)
+            by1.push(t1)
+            by2.push(t2)
+            labs.push(label.new(x, yl, txt, style = toLeft ? (isHigh ? label.style_label_lower_right : label.style_label_upper_right) : isHigh ? label.style_label_down : label.style_label_up,
                  color = color.new(col, 100), textcolor = col, size = primary ? size.normal : size.small,
                  tooltip = (primary ? "Hitungan utama\n" : "Hitungan alternatif\n") + tip, force_overlay = true))
         if k > 0
@@ -889,15 +932,33 @@ drawCount(Count c, Count other, string startAlias, array<float> pp, array<float>
     c.m
 
 // skipIdx: pivot yang sudah dilabeli hitungan utama (titik 0-nya), labelnya digabung lewat startAlias.
-drawHist(Count c, array<float> pp, array<float> cp, array<int> pb, array<int> pt, color col, bool skipFirst, int skipIdx, array<label> labs, array<line> lns) =>
+// Label yang menimpa label lain di registri bx*/by* (hitungan utama/alternatif, pola historis sebelumnya) tidak ditulis;
+// garis polanya tetap digambar.
+drawHist(Count c, array<float> pp, array<float> cp, array<int> pb, array<int> pt, color col, bool skipFirst, int skipIdx, float bpc, float lineH, array<float> bx1, array<float> bx2, array<float> by1, array<float> by2, array<label> labs, array<line> lns) =>
     for k = 0 to c.m
         int   idx    = c.sel.get(k)
         float y      = pp.get(idx)
         int   x      = pb.get(idx)
         bool  isHigh = pt.get(idx) == 1
         string pv    = str.tostring(y, format.mintick)
-        if not (k == 0 and skipFirst) and idx != skipIdx
-            labs.push(label.new(x, y, waveName(k) + " · " + pv, style = isHigh ? label.style_label_down : label.style_label_up,
+        string txt   = waveName(k) + " · " + pv
+        float  w     = str.length(txt) * bpc
+        float  l1    = x - w / 2
+        float  l2    = x + w / 2
+        float  t1    = isHigh ? y : y - lineH
+        float  t2    = t1 + lineH
+        bool   clash = false
+        if bx1.size() > 0
+            for q = 0 to bx1.size() - 1
+                if l1 < bx2.get(q) and l2 > bx1.get(q) and t1 < by2.get(q) and t2 > by1.get(q)
+                    clash := true
+                    break
+        if not (k == 0 and skipFirst) and idx != skipIdx and not clash
+            bx1.push(l1)
+            bx2.push(l2)
+            by1.push(t1)
+            by2.push(t2)
+            labs.push(label.new(x, y, txt, style = isHigh ? label.style_label_down : label.style_label_up,
                  color = color.new(col, 100), textcolor = col, size = size.small,
                  tooltip = "Pola historis (selesai)\n" + pointTip(c, pp, cp, k, false), force_overlay = true))
         if k > 0
@@ -907,7 +968,8 @@ drawHist(Count c, array<float> pp, array<float> cp, array<int> pb, array<int> pt
 
 // Kotak zona S/R tanpa teks (teks di dalam kotak menimpa candle & label gelombang).
 // Teks dikembalikan untuk ditulis sebagai label di margin kanan bersama label level lain.
-drawSRZone(float lo, float hi, int t, int leftBar, string kind, array<float> lv, float atrNow, array<box> bxs) =>
+// Major: garis tepi tegas & isi lebih pekat; Minor: garis putus-putus & isi tipis.
+drawSRZone(float lo, float hi, int t, int leftBar, string kind, bool isMajor, array<float> lv, float atrNow, array<box> bxs) =>
     float pad = math.max(atrNow * 0.25 - (hi - lo) / 2, 0)
     float top = hi + pad
     float bot = lo - pad
@@ -917,32 +979,58 @@ drawSRZone(float lo, float hi, int t, int leftBar, string kind, array<float> lv,
             ew := true
             break
     color c = kind == "R" ? #F23645 : kind == "S" ? #089981 : color.gray
-    bxs.push(box.new(leftBar, top, bar_index + 3, bot, border_color = color.new(c, 75), bgcolor = color.new(c, 92), extend = extend.right, force_overlay = true))
-    kind + " " + str.tostring(t) + "× " + str.tostring((lo + hi) / 2, format.mintick) + (ew ? " ★EW" : "")
+    bxs.push(box.new(leftBar, top, bar_index + 3, bot, border_color = color.new(c, isMajor ? 35 : 75), bgcolor = color.new(c, isMajor ? 86 : 94),
+         border_width = isMajor ? 2 : 1, border_style = isMajor ? line.style_solid : line.style_dashed, extend = extend.right, force_overlay = true))
+    (isMajor ? "Major " : "Minor ") + kind + " " + str.tostring(t) + "× " + str.tostring((lo + hi) / 2, format.mintick) + (ew ? " ★EW" : "")
 
-// Label di margin kanan; digabung ke label yang sudah ada bila levelnya berdekatan (< tol) agar tidak bertumpuk.
-// Tooltip ikut digabung (dT menyimpan tooltip tiap label) supaya penjelasan level yang digabung tidak hilang.
-addRightLabel(float y, string txt, color col, string tip, int x, float tol, array<float> dY, array<label> dL, array<string> dT, array<label> labs) =>
-    int near = -1
-    if dY.size() > 0
-        for j = 0 to dY.size() - 1
-            if math.abs(dY.get(j) - y) < tol
-                near := j
-                break
-    if near >= 0
-        label nl = dL.get(near)
-        nl.set_text(nl.get_text() + "\n" + txt)
-        string merged = dT.get(near) + "\n\n────────\n" + txt + "\n" + tip
-        nl.set_tooltip(merged)
-        dT.set(near, merged)
-    else
-        label lb = label.new(x, y, txt, style = label.style_label_lower_left, color = color.new(col, 100), textcolor = col, size = size.small,
-             tooltip = txt + "\n" + tip, force_overlay = true)
-        labs.push(lb)
-        dY.push(y)
-        dL.push(lb)
-        dT.push(txt + "\n" + tip)
-    near
+// Alasan zona digolongkan Major/Minor, untuk tooltip label zona.
+srClassTip(float swLog, int touches, float majSwLog, int majT, bool isMajor) =>
+    string swTxt = "swing pivot terbesar " + str.tostring((math.exp(swLog) - 1) * 100, "0.0") + "% (Major ≥ " + str.tostring((math.exp(majSwLog) - 1) * 100, "0.0") + "%)"
+    string tTxt  = str.tostring(touches) + "× sentuhan (Major ≥ " + str.tostring(majT) + ")"
+    (isMajor ? "MAJOR — " : "MINOR — ") + swTxt + " · " + tTxt + (isMajor ? "\nTitik balik derajat lebih tinggi atau level yang berkali-kali diuji; lebih layak dijadikan acuan utama." : "\nLevel swing kecil di dalam tren; lebih mudah ditembus.")
+
+// Label level di margin kanan diantre dulu; posisinya disusun sekaligus di layoutRightLabels.
+queueRightLabel(float y, string txt, color col, string tip, array<float> qY, array<string> qT, array<color> qC, array<string> qTip) =>
+    qY.push(y)
+    qT.push(txt)
+    qC.push(col)
+    qTip.push(tip)
+    qY.size()
+
+// Label di atas harga (mid) disusun dari bawah ke atas dan digeser naik bila berjarak < lineH dari label di bawahnya;
+// label di bawah harga disusun dari atas ke bawah dan digeser turun. Jadi label yang paling dekat harga tetap di levelnya,
+// dan geseran selalu menjauhi harga (label level jauh tidak terdorong ke area harga). Teks label_lower_left menempati
+// [y, y + lineH]. Warna tiap label tetap, garis level tetap di harga asli.
+// Mengembalikan posisi y akhir tiap label (urutan antrean) untuk cek tabrakan label proyeksi.
+layoutRightLabels(array<float> qY, array<string> qT, array<color> qC, array<string> qTip, int x, float lineH, float mid, array<label> labs) =>
+    outY = array.new<float>(qY.size(), na)
+    if qY.size() > 0
+        ord = qY.sort_indices(order.ascending)
+        // Atas: naik dari label pertama yang ≥ mid.
+        float nextUp = na
+        float lowestUp = na
+        for i = 0 to ord.size() - 1
+            int j = ord.get(i)
+            if qY.get(j) >= mid
+                float y = na(nextUp) ? qY.get(j) : math.max(qY.get(j), nextUp)
+                outY.set(j, y)
+                nextUp := y + lineH
+                lowestUp := na(lowestUp) ? y : math.min(lowestUp, y)
+        // Bawah: turun dari label tertinggi yang < mid, tidak boleh menyentuh label atas terendah.
+        float nextDn = na(lowestUp) ? na : lowestUp - lineH
+        for i = ord.size() - 1 to 0
+            int j = ord.get(i)
+            if qY.get(j) < mid
+                float y = na(nextDn) ? qY.get(j) : math.min(qY.get(j), nextDn)
+                outY.set(j, y)
+                nextDn := y - lineH
+        for j = 0 to qY.size() - 1
+            float y0 = qY.get(j)
+            float y  = outY.get(j)
+            string moved = y != y0 ? "\n(Label digeser agar tidak menimpa label lain; level sebenarnya " + str.tostring(y0, format.mintick) + ")" : ""
+            labs.push(label.new(x, y, qT.get(j), style = label.style_label_lower_left, color = color.new(qC.get(j), 100), textcolor = qC.get(j),
+                 size = size.small, textalign = text.align_left, tooltip = qT.get(j) + "\n" + qTip.get(j) + moved, force_overlay = true))
+    outY
 
 // Cara level target dihitung, berdasarkan nama targetnya.
 targetExplain(string name) =>
@@ -965,6 +1053,17 @@ waveFor(Count c, array<int> pb, int bar) =>
             w := waveName(k) + (k == c.m ? " (sedang berjalan)" : "")
             break
     w
+
+// ───────── Rentang chart yang terlihat ─────────
+// Dipakai mengubah ukuran teks (piksel) ke satuan harga & bar agar label bisa diatur tidak bertumpuk.
+// Konsekuensi: script dihitung ulang setiap chart digeser/di-zoom.
+var float visHi   = na
+var float visLo   = na
+var int   visBars = 0
+if time >= chart.left_visible_bar_time and time <= chart.right_visible_bar_time
+    visHi   := na(visHi) ? high : math.max(visHi, high)
+    visLo   := na(visLo) ? low : math.min(visLo, low)
+    visBars += 1
 
 // ───────── Render di bar terakhir ─────────
 var labs = array.new<label>()
@@ -1037,6 +1136,12 @@ if barstate.islast
         // Historis: telusuri pivot terkonfirmasi dari kiri, ambil pola lengkap terbaik di tiap jendela,
         // lalu lanjut dari ujung pola itu supaya pola tidak tumpang tindih.
         string startAlias = ""
+        // Pola historis dikumpulkan dulu, digambar setelah hitungan utama/alternatif (lihat akhir blok render).
+        histC    = array.new<Count>()
+        histSkip = array.new<bool>()
+        int hSkipIdx = -1
+        if not na(best1)
+            hSkipIdx := best1.sel.get(0)
         if showHist
             int liveStart = -1
             if not na(best1)
@@ -1076,7 +1181,8 @@ if barstate.islast
                         sLo := math.min(sLo, aP.get(hb.sel.get(q)))
                     bool drawn = sHi - sLo >= 0.025 * (hrHi - hrLo)
                     if drawn
-                        drawHist(hb, aP, cP, aB, aT, colHist, hb.sel.get(0) == prevEnd, liveStart, labs, lns)
+                        histC.push(hb)
+                        histSkip.push(hb.sel.get(0) == prevEnd)
                     if drawn and endIdx == liveStart
                         startAlias := waveName(hb.m)
                     prevEnd := drawn ? endIdx : -1
@@ -1131,14 +1237,23 @@ if barstate.islast
             for i = start + 1 to n - 1
                 lns.push(line.new(aB.get(i - 1), aP.get(i - 1), aB.get(i), aP.get(i), color = color.new(color.gray, 60), width = 1, force_overlay = true))
 
+        // Perkiraan lebar satu karakter dalam bar: ~7 px per karakter pada pane ~1200 px, dengan anggapan candle mengisi
+        // ~separuh lebar pane. Ruang kosong di kanan bar terakhir tidak terbaca (chart.right_visible_bar_time berhenti di
+        // bar terakhir), jadi lebar pane sebenarnya dalam bar tidak diketahui. Bila candle mengisi hampir seluruh pane,
+        // lebar ini kebesaran: label alternatif/historis lebih sering dilewati dan label utama lebih sering digeser.
+        float bpc   = math.max(visBars, 20) * 0.012
         if showAlt and not na(best2)
-            drawCount(best2, best1, "", aP, cP, aB, aT, colAlt, false, labs, lns)
             table.cell(tbl, 0, tblCompact ? 1 : 2, "Alternatif: " + describe(best2, cP), text_color = colAlt, text_size = size.small, text_halign = text.align_left)
 
+        // Registri kotak label gelombang (utama, alternatif, historis) untuk mencegah label saling menimpa.
+        lbX1 = array.new<float>()
+        lbX2 = array.new<float>()
+        lbY1 = array.new<float>()
+        lbY2 = array.new<float>()
+        float lineHist = (pHi - pLo) * lblGap / 100
         if na(best1)
             table.cell(tbl, 0, 0, "Belum ada hitungan valid di " + str.tostring(winK) + " pivot terakhir", text_color = color.white, text_size = size.small)
         else
-            drawCount(best1, showAlt ? best2 : na, startAlias, aP, cP, aB, aT, colMain, true, labs, lns)
             [tp, tn, ip, inm, isd] = computeLevels(best1, cP, useLog)
             string invTxt = ""
             for i = 0 to ip.size() - 1
@@ -1158,12 +1273,19 @@ if barstate.islast
                 else
                     table.cell(tbl, 0, 3, htfTxt, text_color = color.silver, text_size = size.small, text_halign = text.align_left)
 
-            // Label target/batal/konfirmasi ditaruh tepat di kanan bar terakhir (selalu terlihat), garisnya diperpanjang ke kanan,
-            // dan semuanya lewat drawnY/drawnL supaya level yang berdekatan digabung ke satu label.
+            // Label target/batal/konfirmasi/OB/FVG/S-R ditaruh tepat di kanan bar terakhir (selalu terlihat), garisnya diperpanjang ke kanan.
+            // Semua label itu diantre (rq*) lalu disusun di akhir supaya tidak bertumpuk; label proyeksi diantre (pq*) dan
+            // hanya digambar bila tidak menabrak label level.
             int labelX = bar_index + 3
-            drawnY = array.new<float>()
-            drawnL = array.new<label>()
-            drawnT = array.new<string>()
+            rqY   = array.new<float>()
+            rqT   = array.new<string>()
+            rqC   = array.new<color>()
+            rqTip = array.new<string>()
+            pqX   = array.new<int>()
+            pqY   = array.new<float>()
+            pqT   = array.new<string>()
+            pqTip = array.new<string>()
+            pqDn  = array.new<bool>()
             float mergeTol = (pHi - pLo) * 0.015
             if projLegs > 0
                 [prX, prY, prN, prW] = projectPath(best1, cP, aB, projLegs, bar_index, projTol, useLog)
@@ -1177,10 +1299,11 @@ if barstate.islast
                         lns.push(line.new(lx, ly, x, y, color = pc, width = 2, style = line.style_dotted, force_overlay = true))
                         // Ujung gelombang live yang sangat dekat dengan titik live cukup ditunjukkan garisnya, labelnya tidak.
                         if not (i == 0 and math.abs(y - ly) < mergeTol)
-                            labs.push(label.new(x, y, prN.get(i) + " " + str.tostring(y, format.mintick),
-                                 style = y >= ly ? label.style_label_down : label.style_label_up,
-                                 color = color.new(colMain, 100), textcolor = pc, size = size.small,
-                                 tooltip = "Proyeksi " + prN.get(i) + " " + str.tostring(y, format.mintick) + "\n" + prW.get(i), force_overlay = true))
+                            pqX.push(x)
+                            pqY.push(y)
+                            pqT.push(prN.get(i) + " " + str.tostring(y, format.mintick))
+                            pqTip.push("Proyeksi " + prN.get(i) + " " + str.tostring(y, format.mintick) + "\n" + prW.get(i))
+                            pqDn.push(y >= ly)
                         lx := x
                         ly := y
 
@@ -1206,17 +1329,18 @@ if barstate.islast
 
             if showConf
                 // Gelombang live dianggap selesai saat zigzag berbalik sejauh threshold dari ekstremnya.
-                // Dengan pivot sementara, yang belum terkonfirmasi adalah gelombang sebelumnya (ekstrem zigzag terakhir).
-                int    cIdx   = provisional ? best1.sel.get(best1.m - 1) : liveIdx
+                // Dengan pivot sementara, yang belum terkonfirmasi adalah ekstrem zigzag terakhir (n-2). Titik m-1 hitungan bisa
+                // pivot yang lebih tua (n-2 lalu jadi swing internal gelombang m), jadi level diambil dari n-2, bukan dari sel(m-1).
+                int    cIdx   = provisional ? n - 2 : liveIdx
                 float  cExt   = aP.get(cIdx)
                 int    cDir   = aT.get(cIdx)
-                string cw     = provisional ? waveName(best1.m - 1) : wv
+                string cw     = provisional ? (best1.sel.get(best1.m - 1) == n - 2 ? waveName(best1.m - 1) : "swing internal " + wv) : wv
                 float  confLv = cDir == 1 ? cExt * (1 - thr) : cExt * (1 + thr)
                 int    cx2    = labelX
                 lns.push(line.new(aB.get(cIdx), confLv, cx2, confLv, color = color.new(color.teal, 20), style = line.style_dashed, extend = extend.right, force_overlay = true))
-                addRightLabel(confLv, "Konfirmasi " + cw + " selesai jika " + (cDir == 1 ? "< " : "> ") + str.tostring(confLv, format.mintick), color.teal,
+                queueRightLabel(confLv, "Konfirmasi " + cw + " selesai jika " + (cDir == 1 ? "< " : "> ") + str.tostring(confLv, format.mintick), color.teal,
                      "Zigzag berbalik di level ini (" + str.tostring(thr * 100, "0.0") + "% dari ekstrem " + str.tostring(cExt, format.mintick) + "), sehingga gelombang " + cw + " ditutup dan hitungan bergerak ke gelombang berikutnya.\nLevel ikut bergeser bila harga membuat ekstrem baru." + (provisional ? "\nSaat ini " + wv + " dihitung dari pivot sementara karena harga sudah berbalik ≥ " + str.tostring(provFrac * 100, "0") + "% threshold." : "") + "\n\nUji historis: masuk tepat saat pembalikan ini, stop di ekstrem, menghasilkan EV ≈ 0R (1R: −0.02R, 2R: +0.05R; n=7.189). Konfirmasi ini bukan sinyal entry.",
-                     cx2, mergeTol, drawnY, drawnL, drawnT, labs)
+                     rqY, rqT, rqC, rqTip)
 
             string key = str.tostring(best1.sgn) + "|" + str.tostring(best1.m) + "|" + str.tostring(aB.get(best1.sel.get(0)))
             if lastKey != "" and key != lastKey
@@ -1237,9 +1361,9 @@ if barstate.islast
                     float y = ip.get(i)
                     if y > 0
                         lns.push(line.new(x1, y, x2, y, color = colInv, style = line.style_dashed, extend = extend.right, force_overlay = true))
-                        addRightLabel(y, "Batal: " + inm.get(i) + "  " + str.tostring(y, format.mintick), colInv,
+                        queueRightLabel(y, "Batal: " + inm.get(i) + "  " + str.tostring(y, format.mintick), colInv,
                              "Bila harga menembus level ini, hitungan utama melanggar aturan Elliott dan gugur; indikator akan memilih interpretasi lain.",
-                             x2, mergeTol, drawnY, drawnL, drawnT, labs)
+                             rqY, rqT, rqC, rqTip)
                 for i = 0 to tp.size() - 1
                     float y = tp.get(i)
                     // Proyeksi linear gelombang turun yang panjang bisa jatuh di bawah nol; tidak bermakna dan merusak skala.
@@ -1259,7 +1383,7 @@ if barstate.islast
                              + (passed ? "\n✓ Sudah dilewati harga." : "")
                              + (conf ? "\n★ Berdekatan (≤ " + str.tostring(confTol, "0.0") + "%) dengan level dari hitungan alternatif — dua interpretasi menunjuk area yang sama." : "")
                              + "\n\n" + backtestNote(best1.m)
-                        addRightLabel(y, txt, tc, tTip, x2, mergeTol, drawnY, drawnL, drawnT, labs)
+                        queueRightLabel(y, txt, tc, tTip, rqY, rqT, rqC, rqTip)
 
             if showOB and obTop.size() > 0
                 string obTip = "Order block: candle berlawanan terakhir di awal leg yang menghasilkan BOS/CHoCH, belum tersentuh sejak terbentuk.\nUji historis (8 dataset crypto, n=2.169): retest pertama OB → target 2R 32.3% (EV −0.03R), sama dengan zona acak berukuran sama di leg yang sama (32.6%). Dengan FVG pun tidak berbeda. Konteks, bukan sinyal."
@@ -1273,8 +1397,8 @@ if barstate.islast
                             color oc = dem ? #089981 : #F23645
                             bxs.push(box.new(obLeft.get(j), obTop.get(j), bar_index + 3, obBot.get(j), border_color = color.new(oc, 40), bgcolor = color.new(oc, 85),
                                  border_style = line.style_dashed, extend = extend.right, force_overlay = true))
-                            addRightLabel((obTop.get(j) + obBot.get(j)) / 2, (dem ? "OB demand " : "OB supply ") + str.tostring(obBot.get(j), format.mintick) + "–" + str.tostring(obTop.get(j), format.mintick),
-                                 oc, obTip, labelX, mergeTol, drawnY, drawnL, drawnT, labs)
+                            queueRightLabel((obTop.get(j) + obBot.get(j)) / 2, (dem ? "OB demand " : "OB supply ") + str.tostring(obBot.get(j), format.mintick) + "–" + str.tostring(obTop.get(j), format.mintick),
+                                 oc, obTip, rqY, rqT, rqC, rqTip)
                             if dem
                                 nDem += 1
                             else
@@ -1292,8 +1416,8 @@ if barstate.islast
                             color fc = bu ? #00BCD4 : #E91E63
                             bxs.push(box.new(fvLeft.get(j), fvTop.get(j), bar_index + 3, fvBot.get(j), border_color = color.new(fc, 60), bgcolor = color.new(fc, 88),
                                  extend = extend.right, force_overlay = true))
-                            addRightLabel((fvTop.get(j) + fvBot.get(j)) / 2, (bu ? "FVG bullish " : "FVG bearish ") + str.tostring(fvBot.get(j), format.mintick) + "–" + str.tostring(fvTop.get(j), format.mintick),
-                                 fc, fvTip, labelX, mergeTol, drawnY, drawnL, drawnT, labs)
+                            queueRightLabel((fvTop.get(j) + fvBot.get(j)) / 2, (bu ? "FVG bullish " : "FVG bearish ") + str.tostring(fvBot.get(j), format.mintick) + "–" + str.tostring(fvTop.get(j), format.mintick),
+                                 fc, fvTip, rqY, rqT, rqC, rqTip)
                             if bu
                                 nBull += 1
                             else
@@ -1301,53 +1425,73 @@ if barstate.islast
 
             if showSR or showPA
                 // Zona dari pivot zigzag terkonfirmasi (tanpa titik live/sementara), dikelompokkan bila jaraknya ≤ srWidth × ATR.
+                // zS = swing log terbesar di zona: leg terkecil di antara kiri & kanan pivot (pivot penting bila kedua sisinya besar).
                 zLo = array.new<float>()
                 zHi = array.new<float>()
                 zT  = array.new<int>()
                 zB  = array.new<int>()
+                zS  = array.new<float>()
                 int nConf = pP.size() - 1
                 if nConf >= 2
                     pr  = array.new<float>()
                     pbs = array.new<int>()
+                    psw = array.new<float>()
                     for k = math.max(0, nConf - 60) to nConf - 1
                         pr.push(pP.get(k))
                         pbs.push(pB.get(k))
+                        float legR = math.abs(math.log(pP.get(k + 1) / pP.get(k)))
+                        psw.push(k > 0 ? math.min(legR, math.abs(math.log(pP.get(k) / pP.get(k - 1)))) : legR)
                     ord = pr.sort_indices(order.ascending)
                     float w = srWidth * atrV
                     for j = 0 to ord.size() - 1
                         float p  = pr.get(ord.get(j))
                         int   ob = pbs.get(ord.get(j))
+                        float sw = psw.get(ord.get(j))
                         if zLo.size() > 0 and p - zLo.last() <= w
                             zHi.set(zHi.size() - 1, p)
                             zT.set(zT.size() - 1, zT.last() + 1)
                             // Kotak dimulai dari sentuhan terakhir, bukan pertama, supaya tidak menutupi chart bertahun-tahun.
                             zB.set(zB.size() - 1, math.max(zB.last(), ob))
+                            zS.set(zS.size() - 1, math.max(zS.last(), sw))
                         else
                             zLo.push(p)
                             zHi.push(p)
                             zT.push(1)
                             zB.push(ob)
+                            zS.push(sw)
+                float majSw = math.log(1 + thr * srMajMult)
                 ewLv = tp.copy()
                 for v in ip
                     ewLv.push(v)
 
                 if showSR and zLo.size() > 0
                     string srTipZ = "Zona dari pivot zigzag (jumlah sentuhan ×). ★EW = berimpit dengan target/level batal Elliott.\nUji: zona pivot memantul 54.6% vs level acak 55.6% — konteks, bukan sinyal."
-                    int nR = 0
+                    // Per sisi: zona terdekat sampai srPerSide, ditambah zona Major terdekat bila belum ikut tampil.
+                    int  nR   = 0
+                    bool majR = false
                     for j = 0 to zLo.size() - 1
-                        if zT.get(j) >= srMinT and zLo.get(j) <= close and zHi.get(j) >= close
-                            string zt = drawSRZone(zLo.get(j), zHi.get(j), zT.get(j), zB.get(j), "Zona", ewLv, atrV, bxs)
-                            addRightLabel((zLo.get(j) + zHi.get(j)) / 2, zt, color.gray, srTipZ, labelX, mergeTol, drawnY, drawnL, drawnT, labs)
-                        else if zT.get(j) >= srMinT and nR < srPerSide and zLo.get(j) > close
-                            string zt = drawSRZone(zLo.get(j), zHi.get(j), zT.get(j), zB.get(j), "R", ewLv, atrV, bxs)
-                            addRightLabel((zLo.get(j) + zHi.get(j)) / 2, zt, #F23645, srTipZ, labelX, mergeTol, drawnY, drawnL, drawnT, labs)
+                        bool isMaj = zS.get(j) >= majSw or zT.get(j) >= srMajT
+                        bool okZ   = zT.get(j) >= srMinT or isMaj
+                        string cTip = srClassTip(zS.get(j), zT.get(j), majSw, srMajT, isMaj) + "\n\n" + srTipZ
+                        if okZ and zLo.get(j) <= close and zHi.get(j) >= close
+                            string zt = drawSRZone(zLo.get(j), zHi.get(j), zT.get(j), zB.get(j), "Zona", isMaj, ewLv, atrV, bxs)
+                            queueRightLabel((zLo.get(j) + zHi.get(j)) / 2, zt, isMaj ? color.gray : color.new(color.gray, 35), cTip, rqY, rqT, rqC, rqTip)
+                        else if okZ and zLo.get(j) > close and (nR < srPerSide or (isMaj and not majR))
+                            string zt = drawSRZone(zLo.get(j), zHi.get(j), zT.get(j), zB.get(j), "R", isMaj, ewLv, atrV, bxs)
+                            queueRightLabel((zLo.get(j) + zHi.get(j)) / 2, zt, isMaj ? #F23645 : color.new(#F23645, 35), cTip, rqY, rqT, rqC, rqTip)
                             nR += 1
-                    int nS = 0
+                            majR := majR or isMaj
+                    int  nS   = 0
+                    bool majS = false
                     for j = zLo.size() - 1 to 0
-                        if zT.get(j) >= srMinT and nS < srPerSide and zHi.get(j) < close
-                            string zt = drawSRZone(zLo.get(j), zHi.get(j), zT.get(j), zB.get(j), "S", ewLv, atrV, bxs)
-                            addRightLabel((zLo.get(j) + zHi.get(j)) / 2, zt, #089981, srTipZ, labelX, mergeTol, drawnY, drawnL, drawnT, labs)
+                        bool isMaj = zS.get(j) >= majSw or zT.get(j) >= srMajT
+                        bool okZ   = zT.get(j) >= srMinT or isMaj
+                        if okZ and zHi.get(j) < close and (nS < srPerSide or (isMaj and not majS))
+                            string cTip = srClassTip(zS.get(j), zT.get(j), majSw, srMajT, isMaj) + "\n\n" + srTipZ
+                            string zt = drawSRZone(zLo.get(j), zHi.get(j), zT.get(j), zB.get(j), "S", isMaj, ewLv, atrV, bxs)
+                            queueRightLabel((zLo.get(j) + zHi.get(j)) / 2, zt, isMaj ? #089981 : color.new(#089981, 35), cTip, rqY, rqT, rqC, rqTip)
                             nS += 1
+                            majS := majS or isMaj
 
                 if showPA
                     // Bar pivot yang sudah berlabel gelombang (utama/alternatif): tanda PA di sana akan menimpa labelnya.
@@ -1383,8 +1527,10 @@ if barstate.islast
                                 string where = ""
                                 if zLo.size() > 0
                                     for j = 0 to zLo.size() - 1
-                                        if zT.get(j) >= srMinT and ext >= zLo.get(j) - 0.25 * atrV and ext <= zHi.get(j) + 0.25 * atrV
-                                            where := "zona S/R " + str.tostring((zLo.get(j) + zHi.get(j)) / 2, format.mintick) + " (" + str.tostring(zT.get(j)) + "× sentuhan)"
+                                        // Sama dengan syarat tampil zona: Minor ≥ srMinT sentuhan, Major walau 1 sentuhan.
+                                        bool zMaj = zS.get(j) >= majSw or zT.get(j) >= srMajT
+                                        if (zT.get(j) >= srMinT or zMaj) and ext >= zLo.get(j) - 0.25 * atrV and ext <= zHi.get(j) + 0.25 * atrV
+                                            where := (zMaj ? "zona Major " : "zona Minor ") + str.tostring((zLo.get(j) + zHi.get(j)) / 2, format.mintick) + " (" + str.tostring(zT.get(j)) + "× sentuhan)"
                                             break
                                 if where == ""
                                     for v in ewLv
@@ -1401,8 +1547,45 @@ if barstate.islast
                 if tblCompact
                     extraTip += "S/R & PA: " + srTip + "\n"
                 else
-                    table.cell(tbl, 0, 5, "S/R: zona pivot ≥" + str.tostring(srMinT) + "× sentuhan · PA hanya di zona/level Elliott", text_color = color.silver, text_size = size.small, text_halign = text.align_left, tooltip = srTip)
+                    table.cell(tbl, 0, 5, "S/R: Major (swing ≥ " + str.tostring(srMajMult, "0.##") + "× threshold atau ≥" + str.tostring(srMajT) + "× sentuhan) · Minor ≥" + str.tostring(srMinT) + "× sentuhan · PA hanya di zona/level Elliott", text_color = color.silver, text_size = size.small, text_halign = text.align_left, tooltip = srTip)
+
+            // Tinggi satu baris label dalam harga = persen dari rentang candle yang terlihat. Tepat bila skala harga chart
+            // "Auto" + "Skalakan chart harga saja" (skala mengikuti candle, bukan kotak/label yang jauh). Pada skala manual
+            // rentang layar tidak bisa dibaca script; sesuaikan lewat input lblGap.
+            float lineH = na(visHi) ? (pHi - pLo) * lblGap / 100 : (visHi - visLo) * lblGap / 100
+            lineHist := lineH
+
+            // Hitungan utama digambar dulu supaya label alternatif/historis yang menimpanya bisa dilewati.
+            drawCount(best1, showAlt ? best2 : na, startAlias, aP, cP, aB, aT, colMain, true, bpc, lineH, lbX1, lbX2, lbY1, lbY2, labs, lns)
+            if showAlt and not na(best2)
+                drawCount(best2, best1, "", aP, cP, aB, aT, colAlt, false, bpc, lineH, lbX1, lbX2, lbY1, lbY2, labs, lns)
+
+            placedY = layoutRightLabels(rqY, rqT, rqC, rqTip, labelX, lineH, close, labs)
+            // Label proyeksi (teks di tengah titik, di atas untuk label_down / di bawah untuk label_up) dilewati bila sebaris
+            // dengan label level di kanan; garis proyeksinya tetap, dan harganya biasanya sama dengan label target di sebelahnya.
+            // Cek horizontal tidak dipakai: lebar ruang kosong di kanan bar terakhir tidak bisa dibaca script
+            // (chart.right_visible_bar_time berhenti di bar terakhir), jadi lebar teks dalam bar tidak bisa diperkirakan.
+            if pqX.size() > 0
+                color pc2 = color.new(colMain, 30)
+                for i = 0 to pqX.size() - 1
+                    float py   = pqY.get(i)
+                    float pBot = pqDn.get(i) ? py : py - lineH
+                    float pTop = pBot + lineH
+                    bool  hit  = false
+                    if placedY.size() > 0
+                        for j = 0 to placedY.size() - 1
+                            float ry = placedY.get(j)
+                            if pBot < ry + lineH and ry < pTop
+                                hit := true
+                                break
+                    if not hit
+                        labs.push(label.new(pqX.get(i), py, pqT.get(i), style = pqDn.get(i) ? label.style_label_down : label.style_label_up,
+                             color = color.new(colMain, 100), textcolor = pc2, size = size.small, tooltip = pqTip.get(i), force_overlay = true))
 
             if tblCompact
                 table.cell(tbl, 0, 0, mainTxt + "\n" + invTxt, text_color = color.white, text_size = size.small, text_halign = text.align_left,
                      tooltip = extraTip == "" ? "Arahkan kursor ke label di chart untuk detail tiap titik." : extraTip)
+
+        if histC.size() > 0
+            for h = 0 to histC.size() - 1
+                drawHist(histC.get(h), aP, cP, aB, aT, colHist, histSkip.get(h), hSkipIdx, bpc, lineHist, lbX1, lbX2, lbY1, lbY2, labs, lns)
