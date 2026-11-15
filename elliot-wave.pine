@@ -54,6 +54,11 @@ showOB  = input.bool(true, "Order block supply/demand", group = grpS,
      tooltip = "Hanya OB terdekat yang belum tersentuh. Uji: retest OB tidak berbeda dari zona acak di leg yang sama.")
 obCount = input.int(1, "OB per sisi", minval = 1, maxval = 5, group = grpS)
 
+showFVG   = input.bool(true, "Fair value gap (FVG)", group = grpS,
+     tooltip = "Hanya FVG ≥ ukuran minimal yang belum tersentuh, terdekat di atas & di bawah harga. Uji: FVG ≥ 0.5 ATR dihormati lebih baik dari zona acak (EV +0.02R vs −0.18R di target 2R), tapi sendirian hanya impas.")
+fvgMinAtr = input.float(0.5, "Ukuran minimal FVG (× ATR)", minval = 0, step = 0.1, group = grpS)
+fvgCount  = input.int(1, "FVG per sisi", minval = 1, maxval = 5, group = grpS)
+
 grpH = "Historis"
 showHist     = input.bool(true, "Label pola historis", group = grpH)
 histPivots   = input.int(120, "Jumlah pivot historis", minval = 20, maxval = 400, group = grpH,
@@ -358,6 +363,45 @@ if obTop.size() > 0
             if obDir.get(j) == 1 ? low <= obTop.get(j) : high >= obBot.get(j)
                 // Bar terbentuknya (event BOS) juga bisa menyentuh zona; tetap dihitung mitigasi agar konservatif.
                 obMit.set(j, true)
+
+// ───────── Fair value gap ─────────
+// Bullish: low > high 2 bar sebelumnya; bearish: high < low 2 bar sebelumnya. Hanya yang ≥ fvgMinAtr × ATR.
+var fvTop  = array.new<float>()
+var fvBot  = array.new<float>()
+var fvLeft = array.new<int>()
+var fvDir  = array.new<int>()
+var fvMit  = array.new<bool>()
+
+if not na(atrV) and bar_index >= 2
+    int   fd = 0
+    float ft = na
+    float fb = na
+    if low > high[2] and low - high[2] >= fvgMinAtr * atrV
+        fd := 1
+        ft := low
+        fb := high[2]
+    else if high < low[2] and low[2] - high >= fvgMinAtr * atrV
+        fd := -1
+        ft := low[2]
+        fb := high
+    // Mitigasi diperiksa sebelum FVG baru dicatat: bar pembentuk selalu menempel di tepi zonanya sendiri.
+    if fvTop.size() > 0
+        for j = 0 to fvTop.size() - 1
+            if not fvMit.get(j)
+                if fvDir.get(j) == 1 ? low <= fvTop.get(j) : high >= fvBot.get(j)
+                    fvMit.set(j, true)
+    if fd != 0
+        fvTop.push(ft)
+        fvBot.push(fb)
+        fvLeft.push(bar_index - 2)
+        fvDir.push(fd)
+        fvMit.push(false)
+        if fvTop.size() > 150
+            fvTop.shift()
+            fvBot.shift()
+            fvLeft.shift()
+            fvDir.shift()
+            fvMit.shift()
 
 // ───────── Penghitungan gelombang ─────────
 type Count
@@ -1235,6 +1279,25 @@ if barstate.islast
                                 nDem += 1
                             else
                                 nSup += 1
+
+            if showFVG and fvTop.size() > 0
+                string fvTip = "Fair value gap: celah harga 3 candle (low > high 2 bar sebelumnya, atau sebaliknya) ≥ " + str.tostring(fvgMinAtr, "0.0") + " × ATR, belum tersentuh.\nUji historis (8 dataset crypto): retest pertama FVG ≥ 0.5 ATR → target 2R 33.9% (EV +0.02R, n=2.057) vs zona acak berukuran sama 27.3% (EV −0.18R). FVG lebih dihormati dari level acak, tapi sendirian hanya impas — paling berguna bila searah struktur/target Elliott."
+                int nBull = 0
+                int nBear = 0
+                for j = fvTop.size() - 1 to 0
+                    if not fvMit.get(j)
+                        bool bu = fvDir.get(j) == 1 and fvTop.get(j) < close
+                        bool be = fvDir.get(j) == -1 and fvBot.get(j) > close
+                        if (bu and nBull < fvgCount) or (be and nBear < fvgCount)
+                            color fc = bu ? #00BCD4 : #E91E63
+                            bxs.push(box.new(fvLeft.get(j), fvTop.get(j), bar_index + 3, fvBot.get(j), border_color = color.new(fc, 60), bgcolor = color.new(fc, 88),
+                                 extend = extend.right, force_overlay = true))
+                            addRightLabel((fvTop.get(j) + fvBot.get(j)) / 2, (bu ? "FVG bullish " : "FVG bearish ") + str.tostring(fvBot.get(j), format.mintick) + "–" + str.tostring(fvTop.get(j), format.mintick),
+                                 fc, fvTip, labelX, mergeTol, drawnY, drawnL, drawnT, labs)
+                            if bu
+                                nBull += 1
+                            else
+                                nBear += 1
 
             if showSR or showPA
                 // Zona dari pivot zigzag terkonfirmasi (tanpa titik live/sementara), dikelompokkan bila jaraknya ≤ srWidth × ATR.
