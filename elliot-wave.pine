@@ -1,0 +1,812 @@
+//@version=6
+indicator("Elliott Wave Auto Count", shorttitle = "EW Auto", overlay = true, max_labels_count = 500, max_lines_count = 500)
+
+// ───────── Input ─────────
+grpZ = "Zigzag"
+thrMode  = input.string("Auto", "Mode threshold", options = ["Auto", "Persen", "ATR"], group = grpZ,
+     tooltip = "Auto: M 30%, W 15%, D 6%, 4h 2.5%, 1h 1.2%, 15m 0.6%, di bawahnya 0.3%. Disetel dari pengujian BTC. Untuk aset lain pakai Persen atau ATR.")
+thrPctIn = input.float(5.0, "Threshold persen (%)", minval = 0.05, step = 0.05, group = grpZ)
+atrLen   = input.int(14, "Panjang ATR", minval = 1, group = grpZ)
+atrMult  = input.float(3.0, "Pengali ATR", minval = 0.1, step = 0.1, group = grpZ)
+
+grpC = "Penghitungan"
+winK      = input.int(20, "Jumlah pivot yang dianalisis", minval = 6, maxval = 40, group = grpC,
+     tooltip = "Semakin besar, semakin jauh ke belakang pencarian anchor gelombang 0, tapi kalkulasi lebih berat.")
+allowDiag = input.bool(true, "Izinkan diagonal (overlap W4–W1)", group = grpC,
+     tooltip = "Overlap hanya diterima jika bentuknya menyempit: W3 < W1, W4 < W2, dan W5 < W3.")
+showAlt   = input.bool(true, "Tampilkan hitungan alternatif", group = grpC)
+useHtf    = input.bool(true, "Bias arah swing timeframe lebih tinggi", group = grpC,
+     tooltip = "HTF otomatis satu tingkat di atas chart (1h→4h, 4h→D, D→W, W→M). Hitungan yang searah swing HTF diberi skor lebih tinggi.")
+useLog    = input.bool(true, "Hitung rasio di skala log (persen)", group = grpC,
+     tooltip = "Rasio Fibonacci, aturan, target, dan proyeksi dihitung dari perubahan persen, bukan selisih harga. Disarankan untuk crypto/aset yang bergerak ratusan persen; tanpa ini target turun bisa terlalu dalam (mis. C = A di 18rb, versi log ~40rb).")
+projTol   = input.float(3.0, "Toleransi konfluens proyeksi (%)", minval = 0.5, step = 0.5, group = grpC,
+     tooltip = "Rasio proyeksi yang berjarak sedekat ini dengan level penting lain (retrace impuls, ujung W4, 0.618×(0–3)) diprioritaskan.")
+confTol   = input.float(1.0, "Toleransi konfluens (%)", minval = 0.1, step = 0.1, group = grpC,
+     tooltip = "Target utama yang berjarak sedekat ini dengan level hitungan alternatif ditandai ★.")
+
+grpH = "Historis"
+showHist     = input.bool(true, "Label pola historis", group = grpH)
+histPivots   = input.int(120, "Jumlah pivot historis", minval = 20, maxval = 400, group = grpH,
+     tooltip = "Seberapa jauh ke belakang pola lengkap dicari. Lebih besar = lebih berat dihitung.")
+histWin      = input.int(20, "Jendela pivot per pola", minval = 8, maxval = 40, group = grpH,
+     tooltip = "Batas jumlah pivot yang boleh dicakup satu pola historis. Naikkan kalau pola besar tidak terdeteksi.")
+histMinScore = input.float(0.45, "Skor minimum pola historis", minval = 0, maxval = 1, step = 0.05, group = grpH)
+
+grpV = "Tampilan"
+showTargets = input.bool(true, "Tampilkan target & level batal", group = grpV)
+projLegs    = input.int(3, "Jumlah gelombang proyeksi", minval = 0, maxval = 6, group = grpV,
+     tooltip = "Jalur putus-putus ke masa depan, termasuk gelombang yang sedang berjalan. 0 = mati. Harga dari rasio Fibonacci standar, waktu dari durasi gelombang sebanding (W3≈W1, W4≈W2, W5≈W1, B≈A, C≈A).")
+showZz      = input.bool(false, "Tampilkan zigzag mentah", group = grpV)
+tblPosIn    = input.string("Kanan bawah", "Posisi tabel", options = ["Kanan atas", "Kanan bawah", "Kiri atas", "Kiri bawah"], group = grpV)
+colMain     = input.color(#2962FF, "Hitungan utama", group = grpV)
+colAlt      = input.color(color.gray, "Hitungan alternatif", group = grpV)
+colHist     = input.color(#26A69A, "Pola historis", group = grpV)
+colTgt      = input.color(#FF9800, "Target", group = grpV)
+colInv      = input.color(#F23645, "Level batal", group = grpV)
+
+// ───────── Threshold ─────────
+pctForSec(int sec) =>
+    sec >= 2419200 ? 30.0 : sec >= 604800 ? 15.0 : sec >= 86400 ? 6.0 : sec >= 14400 ? 2.5 : sec >= 3600 ? 1.2 : sec >= 900 ? 0.6 : 0.3
+
+tfSec   = timeframe.in_seconds()
+autoPct = pctForSec(tfSec)
+atrPct  = ta.atr(atrLen) / close * atrMult * 100
+thr     = (thrMode == "Auto" ? autoPct : thrMode == "Persen" ? thrPctIn : atrPct) / 100
+
+// ───────── Arah swing HTF ─────────
+htfTf  = tfSec >= 2419200 ? "" : tfSec >= 604800 ? "1M" : tfSec >= 86400 ? "1W" : tfSec >= 14400 ? "1D" : tfSec >= 3600 ? "240" : tfSec >= 900 ? "60" : "15"
+htfThr = htfTf == "" ? 0.0 : pctForSec(timeframe.in_seconds(htfTf)) / 100
+
+htfSwingDir(float t) =>
+    var int   d   = 0
+    var float ext = na
+    var float hiX = na
+    var float loX = na
+    if d == 0
+        hiX := na(hiX) ? high : math.max(hiX, high)
+        loX := na(loX) ? low : math.min(loX, low)
+        if hiX >= loX * (1 + t)
+            d   := close >= (hiX + loX) / 2 ? 1 : -1
+            ext := d == 1 ? hiX : loX
+    else if d == 1
+        if high > ext
+            ext := high
+        else if low <= ext * (1 - t)
+            d   := -1
+            ext := low
+    else
+        if low < ext
+            ext := low
+        else if high >= ext * (1 + t)
+            d   := 1
+            ext := high
+    d
+
+htfDirRaw = request.security(syminfo.tickerid, htfTf == "" ? timeframe.period : htfTf, htfSwingDir(htfThr))
+htfDir    = useHtf and htfTf != "" ? htfDirRaw : 0
+
+// ───────── Zigzag ─────────
+// Elemen terakhir array selalu ekstrem yang masih berjalan (belum terkonfirmasi).
+var pP = array.new<float>()
+var pB = array.new<int>()
+var pT = array.new<int>()   // 1 = high, -1 = low
+var int   zzDir = 0
+var float iHi   = na
+var float iLo   = na
+var int   iHiB  = na
+var int   iLoB  = na
+
+addPivot(array<float> pp, array<int> pb, array<int> pt, float price, int bar, int typ) =>
+    pp.push(price)
+    pb.push(bar)
+    pt.push(typ)
+    if pp.size() > 500
+        pp.shift()
+        pb.shift()
+        pt.shift()
+    pp.size()
+
+if not na(thr)
+    if zzDir == 0
+        if na(iHi) or high > iHi
+            iHi  := high
+            iHiB := bar_index
+        if na(iLo) or low < iLo
+            iLo  := low
+            iLoB := bar_index
+        if iHi >= iLo * (1 + thr) and iHiB != iLoB
+            if iHiB > iLoB
+                addPivot(pP, pB, pT, iLo, iLoB, -1)
+                addPivot(pP, pB, pT, iHi, iHiB, 1)
+                zzDir := 1
+            else
+                addPivot(pP, pB, pT, iHi, iHiB, 1)
+                addPivot(pP, pB, pT, iLo, iLoB, -1)
+                zzDir := -1
+    else
+        float lastP = pP.last()
+        if zzDir == 1
+            if high > lastP
+                pP.set(pP.size() - 1, high)
+                pB.set(pB.size() - 1, bar_index)
+            else if low <= lastP * (1 - thr)
+                addPivot(pP, pB, pT, low, bar_index, -1)
+                zzDir := -1
+        else
+            if low < lastP
+                pP.set(pP.size() - 1, low)
+                pB.set(pB.size() - 1, bar_index)
+            else if high >= lastP * (1 + thr)
+                addPivot(pP, pB, pT, high, bar_index, 1)
+                zzDir := 1
+
+// ───────── Penghitungan gelombang ─────────
+type Count
+    float      score
+    int        m      // indeks titik terakhir: 3–5 = impuls berjalan, 6/7/8 = A/B/C berjalan
+    int        sgn    // 1 = impuls naik, -1 = impuls turun
+    bool       diag
+    bool       trunc
+    bool       thin   // lolos aturan dengan margin sangat tipis
+    array<int> sel    // indeks pivot untuk titik 0..m
+
+// 0 = valid; 1 = ada pivot di tengah yang melewati titik awal (coba titik awal lebih jauh);
+// 2 = ada pivot di tengah yang melewati titik akhir (semua titik awal yang lebih jauh juga gagal).
+segCheck(array<float> pp, int a, int b) =>
+    float pa  = pp.get(a)
+    float pb  = pp.get(b)
+    float lo  = math.min(pa, pb)
+    float hi  = math.max(pa, pb)
+    int   res = 0
+    if b - a >= 2
+        for t = a + 1 to b - 1
+            float v = pp.get(t)
+            bool beyondB = pb > pa ? v > pb : v < pb
+            if beyondB
+                res := 2
+                break
+            if v < lo or v > hi
+                res := 1
+    res
+
+lenAt(array<float> pp, array<int> sel, int i) =>
+    math.abs(pp.get(sel.get(i)) - pp.get(sel.get(i - 1)))
+
+// isLive: titik ke-m masih berjalan, jadi aturannya tetap dicek tapi rasionya tidak dinilai.
+// Pola historis (isLive = false) menilai semua gelombang termasuk yang terakhir.
+evalCount(array<float> pp, array<int> sel, int m, int sgn, float winRange, bool allowDg, int hDir, bool isLive) =>
+    int sm = isLive ? m : m + 1
+    vals = array.new<float>(m + 1, 0.0)
+    for i = 0 to m
+        vals.set(i, sgn * pp.get(sel.get(i)))
+    lens = array.new<float>(m + 1, 0.0)
+    for i = 1 to m
+        lens.set(i, math.abs(vals.get(i) - vals.get(i - 1)))
+    bool  ok    = true
+    bool  diag  = false
+    bool  trunc = false
+    bool  thin  = false
+    float s     = 0.0
+    float c     = 0.0
+    float L1 = lens.get(1)
+    float L2 = lens.get(2)
+    float L3 = lens.get(3)
+    float L4 = na
+    float L5 = na
+    if m >= 4
+        L4 := lens.get(4)
+    if m >= 5
+        L5 := lens.get(5)
+
+    // W2 tidak boleh melewati awal W1
+    if vals.get(2) <= vals.get(0)
+        ok := false
+    float r2 = L2 / L1
+    s += r2 >= 0.5 and r2 <= 0.786 ? 1.0 : r2 >= 0.382 and r2 <= 0.887 ? 0.5 : 0.0
+    c += 1
+
+    // W3 harus melewati ujung W1 (kecuali masih berjalan)
+    if sm > 3
+        if vals.get(3) <= vals.get(1)
+            ok := false
+        float x3 = L3 / L1
+        s += x3 >= 1.618 and x3 <= 2.618 ? 1.0 : x3 >= 1.272 and x3 <= 4.236 ? 0.6 : 0.3
+        c += 1
+
+    // W4 tidak boleh overlap W1, kecuali diagonal menyempit
+    if m >= 4
+        if vals.get(4) <= vals.get(1)
+            if allowDg and L3 < L1 and L4 < L2
+                diag := true
+            else
+                ok := false
+        else if (vals.get(4) - vals.get(1)) / L1 < 0.02
+            thin := true
+        if sm > 4
+            float r4 = L4 / L3
+            s += r4 >= 0.236 and r4 <= 0.382 ? 1.0 : r4 <= 0.5 ? 0.6 : 0.2
+            c += 1
+            s += (r2 >= 0.5) != (r4 >= 0.5) ? 0.5 : 0.0   // alternation
+            c += 0.5
+
+    // W3 tidak boleh terpendek; diagonal menyempit butuh W5 < W3
+    if m >= 5
+        if diag
+            if L5 >= L3
+                ok := false
+        else if L3 < L1 and L3 < L5
+            ok := false
+        else
+            float minOther = math.min(L1, L5)
+            if L3 < math.max(L1, L5) and (L3 - minOther) / minOther < 0.05
+                thin := true
+        if sm > 5
+            if vals.get(5) <= vals.get(3)
+                trunc := true
+            float e1  = L5 / L1
+            float e03 = L5 / math.abs(vals.get(3) - vals.get(0))
+            s += (e1 >= 0.85 and e1 <= 1.15) or (e03 >= 0.55 and e03 <= 0.68) or (e1 >= 1.5 and e1 <= 1.7) ? 1.0 : 0.3
+            c += 1
+
+    // Koreksi A-B-C setelah impuls selesai
+    if sm > 6
+        float rA = lens.get(6) / math.abs(vals.get(5) - vals.get(0))
+        s += rA >= 0.236 and rA <= 0.786 ? 1.0 : 0.5
+        c += 1
+    if m >= 7
+        float rB = lens.get(7) / lens.get(6)
+        if rB > 1.382
+            ok := false
+        if sm > 7
+            s += (rB >= 0.382 and rB <= 0.886) or (rB >= 1.0 and rB <= 1.382) ? 1.0 : 0.5
+            c += 1
+        // C yang sudah selesai: pada zigzag (B < 0.786A) C wajib melewati ujung A.
+        if sm > 8
+            if rB < 0.786 and vals.get(8) >= vals.get(6)
+                ok := false
+            float rC = lens.get(8) / lens.get(6)
+            s += (rC >= 0.618 and rC <= 1.0) or (rC >= 1.5 and rC <= 1.7) ? 1.0 : 0.5
+            c += 1
+
+    float span  = winRange > 0 ? (vals.max() - vals.min()) / winRange : 0.0
+    // Ditarik ke 0.5 dengan bobot 2 rasio: hitungan parsial dengan 1 rasio cocok tidak boleh dapat fit = 1.
+    float fit   = (s + 1.0) / (c + 2.0)
+    // Koreksi (m >= 6) bergerak melawan impuls, jadi derajat induknya berarah -sgn.
+    int   parentDir = m <= 5 ? sgn : -sgn
+    float htfAdj    = hDir == 0 ? 0.0 : parentDir == hDir ? 0.05 : -0.05
+    float score = ok ? 0.55 * fit + 0.35 * span + 0.10 * m / 8.0 + htfAdj - (diag ? 0.05 : 0.0) - (trunc ? 0.15 : 0.0) - (thin ? 0.03 : 0.0) : na
+    [score, diag, trunc, thin]
+
+// DFS mundur dari endIdx: pilih titik k dari pivot yang lebih tua, berselang 2 agar tipe high/low tetap bergantian.
+searchBest(array<float> pp, int endIdx, int startBound, int m, int sgn, float winRange, bool allowDg, int hDir, bool isLive) =>
+    Count best = na
+    sel = array.new<int>(m + 1, 0)
+    sel.set(m, endIdx)
+    int k = m - 1
+    sel.set(k, endIdx - 1)
+    while k < m
+        int j = sel.get(k)
+        if j < startBound + k
+            k += 1
+            if k < m
+                sel.set(k, sel.get(k) - 2)
+            continue
+        int res = segCheck(pp, j, sel.get(k + 1))
+        if res == 2
+            k += 1
+            if k < m
+                sel.set(k, sel.get(k) - 2)
+            continue
+        if res == 1
+            sel.set(k, j - 2)
+            continue
+        if k == 0
+            [sc, dg, tr, th] = evalCount(pp, sel, m, sgn, winRange, allowDg, hDir, isLive)
+            if not na(sc) and (na(best) or sc > best.score)
+                best := Count.new(sc, m, sgn, dg, tr, th, sel.copy())
+            sel.set(0, j - 2)
+        else
+            k -= 1
+            sel.set(k, sel.get(k + 1) - 1)
+    best
+
+waveName(int k) =>
+    k <= 5 ? str.tostring(k) : k == 6 ? "A" : k == 7 ? "B" : "C"
+
+fmtR(float r) =>
+    str.tostring(r, "0.000")
+
+toPx(float v, bool isLog) =>
+    isLog ? math.exp(v) : v
+
+isNear(float a, float b, float tolPct, bool isLog) =>
+    isLog ? math.abs(a - b) <= math.log(1 + tolPct / 100) : math.abs(a - b) <= tolPct / 100 * math.abs(b)
+
+pointRatio(array<float> pp, array<int> sel, int k) =>
+    string out = ""
+    if k == 2
+        out := str.tostring(lenAt(pp, sel, 2) / lenAt(pp, sel, 1), "0.000")
+    else if k == 3
+        out := str.tostring(lenAt(pp, sel, 3) / lenAt(pp, sel, 1), "0.000") + "×W1"
+    else if k == 4
+        out := str.tostring(lenAt(pp, sel, 4) / lenAt(pp, sel, 3), "0.000")
+    else if k == 5
+        out := str.tostring(lenAt(pp, sel, 5) / lenAt(pp, sel, 1), "0.000") + "×W1"
+    else if k == 6
+        out := str.tostring(lenAt(pp, sel, 6) / math.abs(pp.get(sel.get(5)) - pp.get(sel.get(0))), "0.000")
+    else if k == 7
+        out := str.tostring(lenAt(pp, sel, 7) / lenAt(pp, sel, 6), "0.000")
+    else if k == 8
+        out := str.tostring(lenAt(pp, sel, 8) / lenAt(pp, sel, 6), "0.000") + "×A"
+    out
+
+describe(Count c, array<float> pp) =>
+    string d = c.sgn == 1 ? "naik" : "turun"
+    string t = c.m <= 5 ? "Impuls " + d + " · gelombang " + str.tostring(c.m) + " berjalan" : "Gelombang " + waveName(c.m) + " berjalan setelah impuls " + d
+    if c.diag
+        t += " · diagonal"
+    if c.trunc
+        t += " · W5 truncation"
+    if c.thin
+        t += " · lolos tipis"
+    if c.m == 8
+        t += lenAt(pp, c.sel, 7) / lenAt(pp, c.sel, 6) >= 0.786 ? " · flat" : " · zigzag"
+    t + " · skor " + str.tostring(c.score, "0.00")
+
+// Target dan level batal untuk gelombang yang sedang berjalan.
+// pp di sini harga ruang hitung (log bila isLog); keluaran sudah dikonversi ke harga chart.
+computeLevels(Count c, array<float> pp, bool isLog) =>
+    tp  = array.new<float>()
+    tn  = array.new<string>()
+    ip  = array.new<float>()
+    inm = array.new<string>()
+    isd = array.new<int>()   // 1 = batal jika harga di atas level, -1 = di bawah
+    int   m = c.m
+    float s = c.sgn
+    float P0 = pp.get(c.sel.get(0))
+    float P1 = pp.get(c.sel.get(1))
+    float P2 = pp.get(c.sel.get(2))
+    float P3 = pp.get(c.sel.get(3))
+    float P4 = na
+    float P5 = na
+    float P6 = na
+    float P7 = na
+    if m >= 4
+        P4 := pp.get(c.sel.get(4))
+    if m >= 5
+        P5 := pp.get(c.sel.get(5))
+    if m >= 6
+        P6 := pp.get(c.sel.get(6))
+    if m >= 7
+        P7 := pp.get(c.sel.get(7))
+    float L1 = math.abs(P1 - P0)
+    float L3 = math.abs(P3 - P2)
+
+    if m == 3
+        tp.push(P2 + s * L1 * 1.618), tn.push("W3 1.618×W1")
+        tp.push(P2 + s * L1 * 2.618), tn.push("W3 2.618×W1")
+        ip.push(P0), inm.push("W2 lewat awal W1"), isd.push(-c.sgn)
+    else if m == 4
+        tp.push(P3 - s * L3 * 0.236), tn.push("W4 0.236")
+        tp.push(P3 - s * L3 * 0.382), tn.push("W4 0.382")
+        tp.push(P3 - s * L3 * 0.5),   tn.push("W4 0.5")
+        ip.push(c.diag ? P2 : P1), inm.push(c.diag ? "W4 lewat ujung W2" : "W4 overlap W1"), isd.push(-c.sgn)
+    else if m == 5
+        tp.push(P4 + s * L1),                       tn.push("W5 = W1")
+        tp.push(P4 + s * math.abs(P3 - P0) * 0.618), tn.push("W5 0.618×(0–3)")
+        ip.push(c.diag ? P2 : P1), inm.push(c.diag ? "lewat ujung W2" : "overlap W1"), isd.push(-c.sgn)
+        if c.diag or L3 < L1
+            ip.push(P4 + s * L3), inm.push("W5 > W3 (W3 jadi terpendek)"), isd.push(c.sgn)
+    else if m == 6
+        float imp = math.abs(P5 - P0)
+        tp.push(P5 - s * imp * 0.382), tn.push("A 0.382 impuls")
+        tp.push(P5 - s * imp * 0.5),   tn.push("A 0.5 impuls")
+        tp.push(P5 - s * imp * 0.618), tn.push("A 0.618 impuls")
+        tp.push(P4),                   tn.push("Area W4")
+        ip.push(P5), inm.push("lewat ujung W5"), isd.push(c.sgn)
+    else if m == 7
+        float LA = math.abs(P6 - P5)
+        tp.push(P6 + s * LA * 0.5),   tn.push("B 0.5×A")
+        tp.push(P6 + s * LA * 0.618), tn.push("B 0.618×A")
+        tp.push(P6 + s * LA * 0.786), tn.push("B 0.786×A")
+        ip.push(P6 + s * LA * 1.382), inm.push("B > 1.382×A"), isd.push(c.sgn)
+    else if m == 8
+        float LA = math.abs(P6 - P5)
+        tp.push(P7 - s * LA * 0.618), tn.push("C 0.618×A")
+        tp.push(P7 - s * LA),         tn.push("C = A")
+        tp.push(P7 - s * LA * 1.618), tn.push("C 1.618×A")
+        tp.push(P5 - s * math.abs(P5 - P0) * 0.382), tn.push("0.382 impuls")
+        tp.push(P5 - s * math.abs(P5 - P0) * 0.618), tn.push("0.618 impuls")
+        ip.push(P7), inm.push("lewat ujung B"), isd.push(c.sgn)
+    for i = 0 to tp.size() - 1
+        tp.set(i, toPx(tp.get(i), isLog))
+    for i = 0 to ip.size() - 1
+        ip.set(i, toPx(ip.get(i), isLog))
+    [tp, tn, ip, inm, isd]
+
+// Urutan pilihan rasio untuk satu gelombang proyeksi:
+// 1) rasio (yang belum dilewati harga, bila gelombangnya sedang berjalan) yang berdekatan dengan level penting lain di pool;
+// 2) kalau tidak ada konfluens, rasio pertama yang belum dilewati;
+// 3) kalau semua sudah dilewati, gelombang dianggap berakhir di ekstrem saat ini.
+pickLevel(float base, float unit, float dir, array<float> fibs, string unitName, bool isLive, float liveC, array<float> pool, array<string> poolN, float tolPct, bool isLog) =>
+    float  out       = na
+    string why       = ""
+    float  firstOk   = na
+    string firstName = ""
+    for f in fibs
+        float lv = base + dir * unit * f
+        if not isLive or dir * (lv - liveC) > 0
+            if na(firstOk)
+                firstOk   := lv
+                firstName := fmtR(f) + "×" + unitName
+            if na(out) and pool.size() > 0
+                for j = 0 to pool.size() - 1
+                    if isNear(lv, pool.get(j), tolPct, isLog)
+                        out := lv
+                        why := fmtR(f) + "×" + unitName + ", berdekatan dengan " + poolN.get(j) + " " + str.tostring(toPx(pool.get(j), isLog), format.mintick) + " (konfluens)"
+                        break
+    if na(out)
+        if not na(firstOk)
+            out := firstOk
+            why := firstName + (isLive ? ", rasio pertama yang belum dilewati harga" : ", rasio standar gelombang ini")
+        else
+            out := liveC
+            why := "semua rasio sudah dilewati harga, jadi dianggap berakhir di ekstrem saat ini"
+    [out, why]
+
+// pp di sini harga ruang hitung (log bila isLog); outY sudah dikonversi ke harga chart.
+projectPath(Count c, array<float> pp, array<int> pb, int legs, int nowBar, float tolPct, bool isLog) =>
+    px = array.new<float>(9, na)
+    bx = array.new<int>(9, 0)
+    for i = 0 to c.m
+        px.set(i, pp.get(c.sel.get(i)))
+        bx.set(i, pb.get(c.sel.get(i)))
+    float liveC = px.get(c.m)
+    float s     = c.sgn
+    outX = array.new<int>()
+    outY = array.new<float>()
+    outN = array.new<string>()
+    outW = array.new<string>()
+    int kEnd = math.min(8, c.m + legs - 1)
+    for k = c.m to kEnd
+        bool  live  = k == c.m
+        float dirK  = s * (k % 2 == 1 ? 1 : -1)
+        float E     = na
+        string why  = ""
+        string tWhy = ""
+        int   dur   = 1
+        pool  = array.new<float>()
+        poolN = array.new<string>()
+        if k == 3
+            [e, w] = pickLevel(px.get(2), math.abs(px.get(1) - px.get(0)), dirK, live ? array.from(1.618, 2.618, 4.236) : array.from(1.618), "W1", live, liveC, pool, poolN, tolPct, isLog)
+            E   := e
+            why := w
+            dur  := bx.get(1) - bx.get(0)
+            tWhy := "durasi ≈ W1"
+        else if k == 4
+            float L3 = math.abs(px.get(3) - px.get(2))
+            [e, w] = pickLevel(px.get(3), L3, dirK, live ? array.from(0.236, 0.382, 0.5, 0.618) : array.from(0.382), "W3", live, liveC, pool, poolN, tolPct, isLog)
+            E   := e
+            why := w
+            if not c.diag and s * (E - px.get(1)) <= 0
+                E   := px.get(3) + dirK * L3 * 0.236
+                why += "; digeser ke 0.236×W3 agar tidak overlap W1"
+            dur  := bx.get(2) - bx.get(1)
+            tWhy := "durasi ≈ W2"
+        else if k == 5
+            pool.push(px.get(4) + dirK * math.abs(px.get(3) - px.get(0)) * 0.618), poolN.push("0.618×(0–3)")
+            [e, w] = pickLevel(px.get(4), math.abs(px.get(1) - px.get(0)), dirK, live ? array.from(1.0, 1.618) : array.from(1.0), "W1", live, liveC, pool, poolN, tolPct, isLog)
+            E   := e
+            why := w
+            dur  := bx.get(1) - bx.get(0)
+            tWhy := "durasi ≈ W1"
+        else if k == 6
+            pool.push(px.get(4)), poolN.push("ujung W4")
+            [e, w] = pickLevel(px.get(5), math.abs(px.get(5) - px.get(0)), dirK, live ? array.from(0.382, 0.5, 0.618) : array.from(0.382), "impuls", live, liveC, pool, poolN, tolPct, isLog)
+            E   := e
+            why := w
+            dur  := bx.get(5) - bx.get(4)
+            tWhy := "durasi ≈ W5"
+        else if k == 7
+            [e, w] = pickLevel(px.get(6), math.abs(px.get(6) - px.get(5)), dirK, live ? array.from(0.5, 0.618, 0.786) : array.from(0.618), "A", live, liveC, pool, poolN, tolPct, isLog)
+            E   := e
+            why := w
+            dur  := bx.get(6) - bx.get(5)
+            tWhy := "durasi ≈ A"
+        else if k == 8
+            float imp = math.abs(px.get(5) - px.get(0))
+            pool.push(px.get(5) + dirK * imp * 0.382), poolN.push("0.382 impuls")
+            pool.push(px.get(5) + dirK * imp * 0.5),   poolN.push("0.5 impuls")
+            pool.push(px.get(5) + dirK * imp * 0.618), poolN.push("0.618 impuls")
+            pool.push(px.get(4)),                      poolN.push("ujung W4")
+            [e, w] = pickLevel(px.get(7), math.abs(px.get(6) - px.get(5)), dirK, live ? array.from(0.618, 1.0, 1.618) : array.from(1.0), "A", live, liveC, pool, poolN, tolPct, isLog)
+            E   := e
+            why := w
+            dur  := bx.get(6) - bx.get(5)
+            tWhy := "durasi ≈ A"
+        int x = bx.get(k - 1) + math.max(dur, 1)
+        if live
+            x := math.max(x, nowBar + 1)
+        x := math.min(math.max(x, bx.get(k - 1) + 1), nowBar + 480)
+        px.set(k, E)
+        bx.set(k, x)
+        outX.push(x)
+        outY.push(toPx(E, isLog))
+        outN.push(waveName(k) + "?")
+        outW.push("Harga: " + why + (isLog ? " (skala log)" : "") + "\nWaktu: " + tWhy + ", " + str.tostring(math.max(dur, 1)) + " bar" + (live ? "\nGelombang ini sedang berjalan." : "\nBelum terjadi: dihitung dari ujung proyeksi sebelumnya."))
+    [outX, outY, outN, outW]
+
+// Alasan titik ke-k dipilih, ditampilkan sebagai tooltip label.
+// pp = harga chart (untuk ditampilkan), cp = harga ruang hitung (untuk rasio).
+pointTip(Count c, array<float> pp, array<float> cp, int k, bool isLive) =>
+    float  pr   = pp.get(c.sel.get(k))
+    string px   = str.tostring(pr, format.mintick)
+    bool   up   = c.sgn == 1
+    float  L1   = lenAt(cp, c.sel, 1)
+    string t    = ""
+    if k == 0
+        t := "Gelombang 0 di " + px + "\nDipilih karena ini " + (up ? "low terendah" : "high tertinggi") + " di segmen 0→1: tidak ada pivot di antaranya yang melewati titik ini, jadi anchor ada di ekstrem absolut." + "\nDari semua kandidat titik 0 yang lolos aturan, kombinasi ini skornya tertinggi." + "\nLevel ini juga batas: W2 tidak boleh melewatinya."
+    else if k == 1
+        t := "Ujung W1 di " + px + "\nTitik ini " + (up ? "high tertinggi" : "low terendah") + " sebelum koreksi W2. Panjang W1 = " + str.tostring(lenAt(pp, c.sel, 1), format.mintick) + " (acuan rasio W3 dan W5)."
+    else if k == 2
+        t := "Ujung W2 di " + px + "\nRetrace " + fmtR(lenAt(cp, c.sel, 2) / L1) + " dari W1 (panduan 0.5–0.786).\nAturan: W2 tidak melewati titik 0 ✓"
+    else if k == 3
+        t := "Ujung W3 di " + px + "\nPanjang " + fmtR(lenAt(cp, c.sel, 3) / L1) + "×W1 (panduan 1.618–2.618)."
+        if not (isLive and c.m == 3)
+            t += "\nAturan: W3 melewati ujung W1 ✓"
+        if c.m >= 5 and not c.diag
+            t += "\nAturan: W3 bukan gelombang terpendek ✓"
+    else if k == 4
+        t := "Ujung W4 di " + px + "\nRetrace " + fmtR(lenAt(cp, c.sel, 4) / lenAt(cp, c.sel, 3)) + " dari W3 (panduan 0.236–0.382)."
+        t += c.diag ? "\nOverlap dengan W1 diterima karena polanya diagonal menyempit (W3 < W1, W4 < W2)." : "\nAturan: tidak overlap W1, jarak " + str.tostring(math.abs(pr - pp.get(c.sel.get(1))), format.mintick) + " ✓"
+    else if k == 5
+        t := "Ujung W5 di " + px + "\nPanjang " + fmtR(lenAt(cp, c.sel, 5) / L1) + "×W1 (panduan: = W1, atau 0.618×(0–3))."
+        if c.trunc
+            t += "\nTruncation: W5 tidak melewati ujung W3."
+        t += "\nImpuls 5 gelombang lengkap di sini, jadi gerak berikutnya dihitung sebagai koreksi A-B-C."
+    else if k == 6
+        t := "Ujung A di " + px + "\nRetrace " + fmtR(lenAt(cp, c.sel, 6) / math.abs(cp.get(c.sel.get(5)) - cp.get(c.sel.get(0)))) + " dari seluruh impuls 0–5." + "\nA dimulai dari titik 5 karena impuls 0–5 sudah lengkap dan lolos semua aturan (W2 tidak lewat 0, W3 bukan terpendek, W4 tidak overlap W1). Gerak pertama yang melawan impuls adalah A."
+    else if k == 7
+        float rB = lenAt(cp, c.sel, 7) / lenAt(cp, c.sel, 6)
+        t := "Ujung B di " + px + "\nB = " + fmtR(rB) + "×A → " + (rB >= 0.786 ? "pola flat (B ≥ 0.786A)" : "pola zigzag (B < 0.786A)") + ".\nAturan: B tidak lebih dari 1.382×A ✓"
+    else
+        t := "Ujung C di " + px + "\nC = " + fmtR(lenAt(cp, c.sel, 8) / lenAt(cp, c.sel, 6)) + "×A (panduan 0.618–1.0, atau 1.618)."
+    if isLive and k == c.m
+        t += "\n\nMasih berjalan: titik ini ikut bergeser selama harga membuat ekstrem baru."
+    t + "\n\nSkor hitungan: " + str.tostring(c.score, "0.00") + (useLog ? " · rasio skala log" : "")
+
+// Pivot yang dipakai kedua hitungan cukup diberi satu label: nama alternatif ditempel di label utama.
+drawCount(Count c, Count other, string startAlias, array<float> pp, array<float> cp, array<int> pb, array<int> pt, color col, bool primary, array<label> labs, array<line> lns) =>
+    for k = 0 to c.m
+        int   idx    = c.sel.get(k)
+        float y      = pp.get(idx)
+        int   x      = pb.get(idx)
+        bool  isHigh = pt.get(idx) == 1
+        int   oj     = -1
+        if not na(other)
+            oj := other.sel.indexof(idx)
+        string nm = primary ? waveName(k) : "(" + waveName(k) + ")"
+        if k == c.m
+            nm += "?"
+        if k == 0 and startAlias != ""
+            nm := startAlias + " / " + nm
+        if primary and oj >= 0
+            nm += " · (" + waveName(oj) + (oj == other.m ? "?" : "") + ")"
+        string rt  = primary ? pointRatio(cp, c.sel, k) : ""
+        string pv  = str.tostring(y, format.mintick)
+        string det = rt == "" ? pv : rt + " · " + pv
+        string txt = isHigh ? det + "\n" + nm : nm + "\n" + det
+        string tip = pointTip(c, pp, cp, k, true)
+        if k == 0 and startAlias != ""
+            tip := "Titik ini juga akhir gelombang " + startAlias + " dari pola historis sebelumnya.\n\n" + tip
+        if primary or oj < 0
+            labs.push(label.new(x, y, txt, style = isHigh ? label.style_label_down : label.style_label_up,
+                 color = color.new(col, 100), textcolor = col, size = primary ? size.normal : size.small,
+                 tooltip = (primary ? "Hitungan utama\n" : "Hitungan alternatif\n") + tip, force_overlay = true))
+        if k > 0
+            int pidx = c.sel.get(k - 1)
+            lns.push(line.new(pb.get(pidx), pp.get(pidx), x, y, color = col, width = primary ? 2 : 1,
+                 style = primary ? line.style_solid : line.style_dashed, force_overlay = true))
+    c.m
+
+// skipIdx: pivot yang sudah dilabeli hitungan utama (titik 0-nya), labelnya digabung lewat startAlias.
+drawHist(Count c, array<float> pp, array<float> cp, array<int> pb, array<int> pt, color col, bool skipFirst, int skipIdx, array<label> labs, array<line> lns) =>
+    for k = 0 to c.m
+        int   idx    = c.sel.get(k)
+        float y      = pp.get(idx)
+        int   x      = pb.get(idx)
+        bool  isHigh = pt.get(idx) == 1
+        string pv    = str.tostring(y, format.mintick)
+        if not (k == 0 and skipFirst) and idx != skipIdx
+            labs.push(label.new(x, y, isHigh ? pv + "\n" + waveName(k) : waveName(k) + "\n" + pv, style = isHigh ? label.style_label_down : label.style_label_up,
+                 color = color.new(col, 100), textcolor = col, size = size.small,
+                 tooltip = "Pola historis (selesai)\n" + pointTip(c, pp, cp, k, false), force_overlay = true))
+        if k > 0
+            int pidx = c.sel.get(k - 1)
+            lns.push(line.new(pb.get(pidx), pp.get(pidx), x, y, color = col, width = 1, force_overlay = true))
+    c.m
+
+// ───────── Render di bar terakhir ─────────
+var labs = array.new<label>()
+var lns  = array.new<line>()
+tblPos   = tblPosIn == "Kanan atas" ? position.top_right : tblPosIn == "Kiri atas" ? position.top_left : tblPosIn == "Kiri bawah" ? position.bottom_left : position.bottom_right
+var tbl  = table.new(tblPos, 1, 4, bgcolor = color.new(color.black, 15), border_width = 1, force_overlay = true)
+varip string lastKey = ""
+
+if barstate.islast
+    for l in labs
+        l.delete()
+    labs.clear()
+    for ln in lns
+        ln.delete()
+    lns.clear()
+    table.clear(tbl, 0, 0, 0, 3)
+
+    int n = pP.size()
+    if n >= 5
+        // Semua rasio, aturan, dan skor dihitung di cP (log harga bila useLog); pP hanya untuk posisi & tampilan.
+        cP = array.new<float>(n, 0.0)
+        for i = 0 to n - 1
+            cP.set(i, useLog ? math.log(pP.get(i)) : pP.get(i))
+        int   start = math.max(0, n - winK)
+        float wHi   = cP.get(start)
+        float wLo   = cP.get(start)
+        float pHi   = pP.get(start)
+        float pLo   = pP.get(start)
+        for i = start to n - 1
+            wHi := math.max(wHi, cP.get(i))
+            wLo := math.min(wLo, cP.get(i))
+            pHi := math.max(pHi, pP.get(i))
+            pLo := math.min(pLo, pP.get(i))
+
+        // Satu kandidat terbaik per (arah, posisi gelombang), jadi best1 dan best2 selalu interpretasi berbeda.
+        Count best1 = na
+        Count best2 = na
+        for sgnI = 0 to 1
+            int sgn = sgnI == 0 ? 1 : -1
+            for m = 3 to 8
+                int expType = sgn * (m % 2 == 1 ? 1 : -1)
+                if pT.get(n - 1) == expType and n - start >= m + 1
+                    Count cand = searchBest(cP, n - 1, start, m, sgn, wHi - wLo, allowDiag, htfDir, true)
+                    if not na(cand)
+                        if na(best1) or cand.score > best1.score
+                            best2 := best1
+                            best1 := cand
+                        else if na(best2) or cand.score > best2.score
+                            best2 := cand
+
+        // Historis: telusuri pivot terkonfirmasi dari kiri, ambil pola lengkap terbaik di tiap jendela,
+        // lalu lanjut dari ujung pola itu supaya pola tidak tumpang tindih.
+        string startAlias = ""
+        if showHist
+            int liveStart = -1
+            if not na(best1)
+                liveStart := best1.sel.get(0)
+            int hEnd = liveStart >= 0 ? math.min(liveStart, n - 2) : n - 2
+            int i    = math.max(0, n - histPivots)
+            int prevEnd = -1
+            while i <= hEnd - 5
+                int   eMax = math.min(i + histWin, hEnd)
+                float hHi  = cP.get(i)
+                float hLo  = cP.get(i)
+                for t = i to eMax
+                    hHi := math.max(hHi, cP.get(t))
+                    hLo := math.min(hLo, cP.get(t))
+                Count hb = na
+                for e = i + 5 to eMax
+                    for mi = 0 to 1
+                        int m   = mi == 0 ? 5 : 8
+                        int sgn = mi == 0 ? pT.get(e) : -pT.get(e)
+                        if e - i >= m
+                            Count c = searchBest(cP, e, i, m, sgn, hHi - hLo, allowDiag, 0, false)
+                            if not na(c) and (na(hb) or c.score > hb.score)
+                                hb := c
+                if not na(hb) and hb.score >= histMinScore
+                    int endIdx = hb.sel.get(hb.m)
+                    drawHist(hb, pP, cP, pB, pT, colHist, hb.sel.get(0) == prevEnd, liveStart, labs, lns)
+                    if endIdx == liveStart
+                        startAlias := waveName(hb.m)
+                    prevEnd := endIdx
+                    i := endIdx
+                else
+                    i += 2
+
+        if showZz
+            for i = start + 1 to n - 1
+                lns.push(line.new(pB.get(i - 1), pP.get(i - 1), pB.get(i), pP.get(i), color = color.new(color.gray, 60), width = 1, force_overlay = true))
+
+        if showAlt and not na(best2)
+            drawCount(best2, best1, "", pP, cP, pB, pT, colAlt, false, labs, lns)
+            table.cell(tbl, 0, 2, "Alternatif: " + describe(best2, cP), text_color = colAlt, text_size = size.small, text_halign = text.align_left)
+
+        if na(best1)
+            table.cell(tbl, 0, 0, "Belum ada hitungan valid di " + str.tostring(winK) + " pivot terakhir", text_color = color.white, text_size = size.small)
+        else
+            drawCount(best1, showAlt ? best2 : na, startAlias, pP, cP, pB, pT, colMain, true, labs, lns)
+            [tp, tn, ip, inm, isd] = computeLevels(best1, cP, useLog)
+            string invTxt = ""
+            for i = 0 to ip.size() - 1
+                invTxt += (i > 0 ? "\n" : "") + "Batal jika " + (isd.get(i) == 1 ? "> " : "< ") + str.tostring(ip.get(i), format.mintick) + " (" + inm.get(i) + ")"
+            table.cell(tbl, 0, 0, "Utama: " + describe(best1, cP), text_color = color.white, text_size = size.small, text_halign = text.align_left)
+            table.cell(tbl, 0, 1, invTxt, text_color = colInv, text_size = size.small, text_halign = text.align_left)
+            if htfTf != "" and useHtf
+                table.cell(tbl, 0, 3, "Swing HTF (" + htfTf + "): " + (htfDir == 1 ? "naik" : htfDir == -1 ? "turun" : "belum terbentuk"),
+                     text_color = color.silver, text_size = size.small, text_halign = text.align_left)
+
+            // Label target/batal ditaruh di kanan titik proyeksi terjauh agar tidak menimpa label proyeksi.
+            int labelX = bar_index + 20
+            if projLegs > 0
+                [prX, prY, prN, prW] = projectPath(best1, cP, pB, projLegs, bar_index, projTol, useLog)
+                int   lx = pB.get(best1.sel.get(best1.m))
+                float ly = pP.get(best1.sel.get(best1.m))
+                color pc = color.new(colMain, 30)
+                for i = 0 to prX.size() - 1
+                    int   x = prX.get(i)
+                    float y = prY.get(i)
+                    if y > 0
+                        lns.push(line.new(lx, ly, x, y, color = pc, width = 2, style = line.style_dotted, force_overlay = true))
+                        labs.push(label.new(x, y, prN.get(i) + " " + str.tostring(y, format.mintick),
+                             style = y >= ly ? label.style_label_down : label.style_label_up,
+                             color = color.new(colMain, 100), textcolor = pc, size = size.small,
+                             tooltip = "Proyeksi " + prN.get(i) + " " + str.tostring(y, format.mintick) + "\n" + prW.get(i), force_overlay = true))
+                        lx := x
+                        ly := y
+                        labelX := math.max(labelX, x + 10)
+
+            string key = str.tostring(best1.sgn) + "|" + str.tostring(best1.m) + "|" + str.tostring(pB.get(best1.sel.get(0)))
+            if lastKey != "" and key != lastKey
+                alert("EW " + syminfo.ticker + " " + timeframe.period + " — hitungan utama berubah: " + describe(best1, cP), alert.freq_once_per_bar)
+            lastKey := key
+
+            if showTargets
+                // Level hitungan alternatif dipakai untuk mendeteksi konfluens.
+                altLv = array.new<float>()
+                if not na(best2)
+                    [atp, atn, aip, ainm, aisd] = computeLevels(best2, cP, useLog)
+                    altLv := atp.concat(aip)
+                int   x1      = pB.get(best1.sel.get(best1.m))
+                int   x2      = math.min(labelX, bar_index + 490)
+                float liveP   = pP.get(best1.sel.get(best1.m))
+                int   liveDir = pT.get(best1.sel.get(best1.m))
+                // Level yang jaraknya < 1.5% rentang harga digabung ke satu label agar teks tidak bertumpuk.
+                float mergeTol = (pHi - pLo) * 0.015
+                drawnY = array.new<float>()
+                drawnL = array.new<label>()
+                for i = 0 to ip.size() - 1
+                    float y = ip.get(i)
+                    if y > 0
+                        lns.push(line.new(x1, y, x2, y, color = colInv, style = line.style_dashed, force_overlay = true))
+                        label lb = label.new(x2, y, "Batal: " + inm.get(i) + "  " + str.tostring(y, format.mintick), style = label.style_label_left,
+                             color = color.new(colInv, 100), textcolor = colInv, size = size.small, force_overlay = true)
+                        labs.push(lb)
+                        drawnY.push(y)
+                        drawnL.push(lb)
+                for i = 0 to tp.size() - 1
+                    float y = tp.get(i)
+                    // Proyeksi linear gelombang turun yang panjang bisa jatuh di bawah nol; tidak bermakna dan merusak skala.
+                    if y > 0
+                        bool passed = liveDir * (liveP - y) >= 0
+                        bool conf   = false
+                        if altLv.size() > 0
+                            for a in altLv
+                                if math.abs(a - y) / y * 100 <= confTol
+                                    conf := true
+                                    break
+                        color  tc  = passed ? color.new(colTgt, 55) : colTgt
+                        string txt = (passed ? "✓ " : "") + tn.get(i) + "  " + str.tostring(y, format.mintick) + (conf ? "  ★" : "")
+                        lns.push(line.new(x1, y, x2, y, color = tc, style = line.style_dotted, force_overlay = true))
+                        int near = -1
+                        if drawnY.size() > 0
+                            for j = 0 to drawnY.size() - 1
+                                if math.abs(drawnY.get(j) - y) < mergeTol
+                                    near := j
+                                    break
+                        if near >= 0
+                            label nl = drawnL.get(near)
+                            nl.set_text(nl.get_text() + "\n" + txt)
+                        else
+                            label lb = label.new(x2, y, txt, style = label.style_label_left,
+                                 color = color.new(colTgt, 100), textcolor = tc, size = size.small, force_overlay = true)
+                            labs.push(lb)
+                            drawnY.push(y)
+                            drawnL.push(lb)
