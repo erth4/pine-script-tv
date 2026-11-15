@@ -89,6 +89,32 @@ colHist     = input.color(#26A69A, "Pola historis", group = grpV)
 colTgt      = input.color(#FF9800, "Target", group = grpV)
 colInv      = input.color(#F23645, "Level batal", group = grpV)
 
+// ───────── Warna adaptif tema ─────────
+// Latar chart gelap (luminans < 0.5): warna dicampur ke putih dan transparansi teks/garis dikurangi supaya kontras.
+// Latar terang: warna dipakai apa adanya.
+bgLum  = (0.299 * color.r(chart.bg_color) + 0.587 * color.g(chart.bg_color) + 0.114 * color.b(chart.bg_color)) / 255
+isDark = bgLum < 0.5
+
+lighten(color c, float k) =>
+    isDark ? color.rgb(color.r(c) + (255 - color.r(c)) * k, color.g(c) + (255 - color.g(c)) * k, color.b(c) + (255 - color.b(c)) * k, color.t(c)) : c
+
+// Transparansi teks/garis: di tema gelap dikurangi 40% (mis. 35 → 21) agar label minor & level terlewati tetap terbaca.
+tA(int t) =>
+    isDark ? int(math.round(t * 0.6)) : t
+
+cMain   = lighten(colMain, 0.35)
+cAlt    = lighten(colAlt, 0.4)
+cHist   = lighten(colHist, 0.25)
+cTgt    = lighten(colTgt, 0.15)
+cInv    = lighten(colInv, 0.2)
+cRed    = lighten(#F23645, 0.2)
+cGreen  = lighten(#089981, 0.3)
+cGray   = lighten(color.gray, 0.4)
+cTeal   = lighten(color.teal, 0.3)
+cPurple = lighten(#9C27B0, 0.35)
+cCyan   = lighten(#00BCD4, 0.15)
+cPink   = lighten(#E91E63, 0.2)
+
 // ───────── Threshold ─────────
 pctForSec(int sec) =>
     sec >= 2419200 ? 30.0 : sec >= 604800 ? 15.0 : sec >= 86400 ? 6.0 : sec >= 14400 ? 2.5 : sec >= 3600 ? 1.2 : sec >= 900 ? 0.6 : 0.3
@@ -981,8 +1007,8 @@ drawSRZone(float lo, float hi, int t, int leftBar, string kind, bool isMajor, ar
         if v >= bot and v <= top
             ew := true
             break
-    color c = kind == "R" ? #F23645 : kind == "S" ? #089981 : color.gray
-    bxs.push(box.new(leftBar, top, bar_index + 3, bot, border_color = color.new(c, isMajor ? 35 : 75), bgcolor = color.new(c, isMajor ? 86 : 94),
+    color c = kind == "R" ? cRed : kind == "S" ? cGreen : cGray
+    bxs.push(box.new(leftBar, top, bar_index + 3, bot, border_color = color.new(c, tA(isMajor ? 35 : 75)), bgcolor = color.new(c, isMajor ? 86 : 94),
          border_width = isMajor ? 2 : 1, border_style = isMajor ? line.style_solid : line.style_dashed, extend = extend.right, force_overlay = true))
     (isMajor ? "Major " : "Minor ") + kind + " " + str.tostring(t) + "× " + str.tostring((lo + hi) / 2, format.mintick) + (ew ? " ★EW" : "")
 
@@ -1073,7 +1099,7 @@ var labs = array.new<label>()
 var lns  = array.new<line>()
 tblPos   = tblPosIn == "Kanan atas" ? position.top_right : tblPosIn == "Kiri atas" ? position.top_left : tblPosIn == "Kiri bawah" ? position.bottom_left : position.bottom_right
 var bxs  = array.new<box>()
-var tbl  = table.new(tblPos, 1, 6, bgcolor = color.new(color.black, 15), border_width = 1, force_overlay = true)
+var tbl  = table.new(tblPos, 1, 6, bgcolor = color.new(color.black, tA(15)), border_width = 1, force_overlay = true)
 varip string lastKey = ""
 
 if barstate.islast
@@ -1210,8 +1236,8 @@ if barstate.islast
                 int    ed  = evDir.get(e)
                 string et  = evType.get(e)
                 bool   wsw = evSwBar.get(e) >= 0
-                color  ec  = ed == 1 ? #089981 : #F23645
-                lns.push(line.new(ef, el, eb, el, color = color.new(ec, 30), style = line.style_dotted, force_overlay = true))
+                color  ec  = ed == 1 ? cGreen : cRed
+                lns.push(line.new(ef, el, eb, el, color = color.new(ec, tA(30)), style = line.style_dotted, force_overlay = true))
                 string ctx = ""
                 if not na(best1)
                     if eb > aB.get(best1.sel.get(0))
@@ -1221,9 +1247,9 @@ if barstate.islast
                      tooltip = (et == "BOS" ? bosTip : chTip) + (wsw ? "\n\n" + swTip : "") + "\nLevel " + str.tostring(el, format.mintick) + ctx, force_overlay = true))
                 if wsw
                     // Sweep yang mendahului CHoCH: garis dari swing yang disapu ke bar sweep.
-                    lns.push(line.new(evSwFrm.get(e), evSwLvl.get(e), evSwBar.get(e), evSwLvl.get(e), color = color.new(#9C27B0, 20), style = line.style_dotted, force_overlay = true))
+                    lns.push(line.new(evSwFrm.get(e), evSwLvl.get(e), evSwBar.get(e), evSwLvl.get(e), color = color.new(cPurple, tA(20)), style = line.style_dotted, force_overlay = true))
                     labs.push(label.new(evSwBar.get(e), evSwLvl.get(e), "sweep", style = ed == 1 ? label.style_label_up : label.style_label_down,
-                         color = color.new(#9C27B0, 100), textcolor = #9C27B0, size = size.tiny, tooltip = swTip, force_overlay = true))
+                         color = color.new(cPurple, 100), textcolor = cPurple, size = size.tiny, tooltip = swTip, force_overlay = true))
 
         if showSwAll and swBar.size() > 0
             for e = swBar.size() - 1 to 0
@@ -1231,14 +1257,14 @@ if barstate.islast
                 if sb < histLeft
                     break
                 int sd = swDir.get(e)
-                lns.push(line.new(swFrom.get(e), swLvl.get(e), sb, swLvl.get(e), color = color.new(#9C27B0, 60), style = line.style_dotted, force_overlay = true))
+                lns.push(line.new(swFrom.get(e), swLvl.get(e), sb, swLvl.get(e), color = color.new(cPurple, tA(60)), style = line.style_dotted, force_overlay = true))
                 labs.push(label.new(sb, swLvl.get(e), "sw", style = sd == 1 ? label.style_label_up : label.style_label_down,
-                     color = color.new(#9C27B0, 100), textcolor = color.new(#9C27B0, 30), size = size.tiny,
+                     color = color.new(cPurple, 100), textcolor = color.new(cPurple, tA(30)), size = size.tiny,
                      tooltip = "Sweep likuiditas: wick menembus swing " + str.tostring(swLvl.get(e), format.mintick) + " lalu close kembali.\nUji historis: sweep saja EV −0.08R (1R) / 0.00R (2R), n=2.076; searah tren lebih buruk (−0.08R di 2R). Bermakna hanya bila diikuti CHoCH (⚡).", force_overlay = true))
 
         if showZz
             for i = start + 1 to n - 1
-                lns.push(line.new(aB.get(i - 1), aP.get(i - 1), aB.get(i), aP.get(i), color = color.new(color.gray, 60), width = 1, force_overlay = true))
+                lns.push(line.new(aB.get(i - 1), aP.get(i - 1), aB.get(i), aP.get(i), color = color.new(cGray, tA(60)), width = 1, force_overlay = true))
 
         // Perkiraan lebar satu karakter dalam bar: ~7 px per karakter pada pane ~1200 px, dengan anggapan candle mengisi
         // pane. Ruang kosong di kanan bar terakhir tidak terbaca (chart.right_visible_bar_time berhenti di bar terakhir);
@@ -1246,7 +1272,7 @@ if barstate.islast
         // terlalu besar lebih buruk: label tergeser jauh dari pivotnya karena dianggap menimpa label yang sebenarnya jauh.
         float bpc   = math.max(visBars, 20) * 0.006
         if showAlt and not na(best2)
-            table.cell(tbl, 0, tblCompact ? 1 : 2, "Alternatif: " + describe(best2, cP), text_color = colAlt, text_size = size.small, text_halign = text.align_left)
+            table.cell(tbl, 0, tblCompact ? 1 : 2, "Alternatif: " + describe(best2, cP), text_color = cAlt, text_size = size.small, text_halign = text.align_left)
 
         // Registri kotak label gelombang (utama, alternatif, historis) untuk mencegah label saling menimpa.
         lbX1 = array.new<float>()
@@ -1268,7 +1294,7 @@ if barstate.islast
                 table.cell(tbl, 0, 0, mainTxt + "\n" + invTxt, text_color = color.white, text_size = size.small, text_halign = text.align_left)
             else
                 table.cell(tbl, 0, 0, mainTxt, text_color = color.white, text_size = size.small, text_halign = text.align_left)
-                table.cell(tbl, 0, 1, invTxt, text_color = colInv, text_size = size.small, text_halign = text.align_left)
+                table.cell(tbl, 0, 1, invTxt, text_color = cInv, text_size = size.small, text_halign = text.align_left)
             if htfTf != "" and useHtf
                 string htfTxt = "Swing HTF (" + htfTf + "): " + (htfDir == 1 ? "naik" : htfDir == -1 ? "turun" : "belum terbentuk")
                 if tblCompact
@@ -1294,7 +1320,7 @@ if barstate.islast
                 [prX, prY, prN, prW] = projectPath(best1, cP, aB, projLegs, bar_index, projTol, useLog)
                 int   lx = aB.get(best1.sel.get(best1.m))
                 float ly = aP.get(best1.sel.get(best1.m))
-                color pc = color.new(colMain, 30)
+                color pc = color.new(cMain, tA(30))
                 for i = 0 to prX.size() - 1
                     int   x = prX.get(i)
                     float y = prY.get(i)
@@ -1340,8 +1366,8 @@ if barstate.islast
                 string cw     = provisional ? (best1.sel.get(best1.m - 1) == n - 2 ? waveName(best1.m - 1) : "swing internal " + wv) : wv
                 float  confLv = cDir == 1 ? cExt * (1 - thr) : cExt * (1 + thr)
                 int    cx2    = labelX
-                lns.push(line.new(aB.get(cIdx), confLv, cx2, confLv, color = color.new(color.teal, 20), style = line.style_dashed, extend = extend.right, force_overlay = true))
-                queueRightLabel(confLv, "Konfirmasi " + cw + " selesai jika " + (cDir == 1 ? "< " : "> ") + str.tostring(confLv, format.mintick), color.teal,
+                lns.push(line.new(aB.get(cIdx), confLv, cx2, confLv, color = color.new(cTeal, tA(20)), style = line.style_dashed, extend = extend.right, force_overlay = true))
+                queueRightLabel(confLv, "Konfirmasi " + cw + " selesai jika " + (cDir == 1 ? "< " : "> ") + str.tostring(confLv, format.mintick), cTeal,
                      "Zigzag berbalik di level ini (" + str.tostring(thr * 100, "0.0") + "% dari ekstrem " + str.tostring(cExt, format.mintick) + "), sehingga gelombang " + cw + " ditutup dan hitungan bergerak ke gelombang berikutnya.\nLevel ikut bergeser bila harga membuat ekstrem baru." + (provisional ? "\nSaat ini " + wv + " dihitung dari pivot sementara karena harga sudah berbalik ≥ " + str.tostring(provFrac * 100, "0") + "% threshold." : "") + "\n\nUji historis: masuk tepat saat pembalikan ini, stop di ekstrem, menghasilkan EV ≈ 0R (1R: −0.02R, 2R: +0.05R; n=7.189). Konfirmasi ini bukan sinyal entry.",
                      rqY, rqT, rqC, rqTip)
 
@@ -1363,8 +1389,8 @@ if barstate.islast
                 for i = 0 to ip.size() - 1
                     float y = ip.get(i)
                     if y > 0
-                        lns.push(line.new(x1, y, x2, y, color = colInv, style = line.style_dashed, extend = extend.right, force_overlay = true))
-                        queueRightLabel(y, "Batal: " + inm.get(i) + "  " + str.tostring(y, format.mintick), colInv,
+                        lns.push(line.new(x1, y, x2, y, color = cInv, style = line.style_dashed, extend = extend.right, force_overlay = true))
+                        queueRightLabel(y, "Batal: " + inm.get(i) + "  " + str.tostring(y, format.mintick), cInv,
                              "Bila harga menembus level ini, hitungan utama melanggar aturan Elliott dan gugur; indikator akan memilih interpretasi lain.",
                              rqY, rqT, rqC, rqTip)
                 for i = 0 to tp.size() - 1
@@ -1378,7 +1404,7 @@ if barstate.islast
                                 if math.abs(a - y) / y * 100 <= confTol
                                     conf := true
                                     break
-                        color  tc  = passed ? color.new(colTgt, 55) : colTgt
+                        color  tc  = passed ? color.new(cTgt, tA(55)) : cTgt
                         string txt = (passed ? "✓ " : "") + tn.get(i) + "  " + str.tostring(y, format.mintick) + (conf ? "  ★" : "")
                         lns.push(line.new(x1, y, x2, y, color = tc, style = line.style_dotted, extend = extend.right, force_overlay = true))
                         string tTip = "Target gelombang " + wv + " (sedang berjalan).\n" + targetExplain(tn.get(i))
@@ -1397,8 +1423,8 @@ if barstate.islast
                         bool dem = obDir.get(j) == 1 and obTop.get(j) < close
                         bool sup = obDir.get(j) == -1 and obBot.get(j) > close
                         if (dem and nDem < obCount) or (sup and nSup < obCount)
-                            color oc = dem ? #089981 : #F23645
-                            bxs.push(box.new(obLeft.get(j), obTop.get(j), bar_index + 3, obBot.get(j), border_color = color.new(oc, 40), bgcolor = color.new(oc, 85),
+                            color oc = dem ? cGreen : cRed
+                            bxs.push(box.new(obLeft.get(j), obTop.get(j), bar_index + 3, obBot.get(j), border_color = color.new(oc, tA(40)), bgcolor = color.new(oc, 85),
                                  border_style = line.style_dashed, extend = extend.right, force_overlay = true))
                             queueRightLabel((obTop.get(j) + obBot.get(j)) / 2, (dem ? "OB demand " : "OB supply ") + str.tostring(obBot.get(j), format.mintick) + "–" + str.tostring(obTop.get(j), format.mintick),
                                  oc, obTip, rqY, rqT, rqC, rqTip)
@@ -1416,8 +1442,8 @@ if barstate.islast
                         bool bu = fvDir.get(j) == 1 and fvTop.get(j) < close
                         bool be = fvDir.get(j) == -1 and fvBot.get(j) > close
                         if (bu and nBull < fvgCount) or (be and nBear < fvgCount)
-                            color fc = bu ? #00BCD4 : #E91E63
-                            bxs.push(box.new(fvLeft.get(j), fvTop.get(j), bar_index + 3, fvBot.get(j), border_color = color.new(fc, 60), bgcolor = color.new(fc, 88),
+                            color fc = bu ? cCyan : cPink
+                            bxs.push(box.new(fvLeft.get(j), fvTop.get(j), bar_index + 3, fvBot.get(j), border_color = color.new(fc, tA(60)), bgcolor = color.new(fc, 88),
                                  extend = extend.right, force_overlay = true))
                             queueRightLabel((fvTop.get(j) + fvBot.get(j)) / 2, (bu ? "FVG bullish " : "FVG bearish ") + str.tostring(fvBot.get(j), format.mintick) + "–" + str.tostring(fvTop.get(j), format.mintick),
                                  fc, fvTip, rqY, rqT, rqC, rqTip)
@@ -1478,10 +1504,10 @@ if barstate.islast
                         string cTip = srClassTip(zS.get(j), zT.get(j), majSw, srMajT, isMaj) + "\n\n" + srTipZ
                         if okZ and zLo.get(j) <= close and zHi.get(j) >= close
                             string zt = drawSRZone(zLo.get(j), zHi.get(j), zT.get(j), zB.get(j), "Zona", isMaj, ewLv, atrV, bxs)
-                            queueRightLabel((zLo.get(j) + zHi.get(j)) / 2, zt, isMaj ? color.gray : color.new(color.gray, 35), cTip, rqY, rqT, rqC, rqTip)
+                            queueRightLabel((zLo.get(j) + zHi.get(j)) / 2, zt, isMaj ? cGray : color.new(cGray, tA(35)), cTip, rqY, rqT, rqC, rqTip)
                         else if okZ and zLo.get(j) > close and (nR < srPerSide or (isMaj and not majR))
                             string zt = drawSRZone(zLo.get(j), zHi.get(j), zT.get(j), zB.get(j), "R", isMaj, ewLv, atrV, bxs)
-                            queueRightLabel((zLo.get(j) + zHi.get(j)) / 2, zt, isMaj ? #F23645 : color.new(#F23645, 35), cTip, rqY, rqT, rqC, rqTip)
+                            queueRightLabel((zLo.get(j) + zHi.get(j)) / 2, zt, isMaj ? cRed : color.new(cRed, tA(35)), cTip, rqY, rqT, rqC, rqTip)
                             nR += 1
                             majR := majR or isMaj
                     int  nS   = 0
@@ -1492,7 +1518,7 @@ if barstate.islast
                         if okZ and zHi.get(j) < close and (nS < srPerSide or (isMaj and not majS))
                             string cTip = srClassTip(zS.get(j), zT.get(j), majSw, srMajT, isMaj) + "\n\n" + srTipZ
                             string zt = drawSRZone(zLo.get(j), zHi.get(j), zT.get(j), zB.get(j), "S", isMaj, ewLv, atrV, bxs)
-                            queueRightLabel((zLo.get(j) + zHi.get(j)) / 2, zt, isMaj ? #089981 : color.new(#089981, 35), cTip, rqY, rqT, rqC, rqTip)
+                            queueRightLabel((zLo.get(j) + zHi.get(j)) / 2, zt, isMaj ? cGreen : color.new(cGreen, tA(35)), cTip, rqY, rqT, rqC, rqTip)
                             nS += 1
                             majS := majS or isMaj
 
@@ -1543,7 +1569,7 @@ if barstate.islast
                                 if where != ""
                                     string nm = bull ? (bullEng ? "Bullish engulfing" : "Hammer / pin bar bullish") : (bearEng ? "Bearish engulfing" : "Shooting star / pin bar bearish")
                                     labs.push(label.new(bar_index - k, ext, bull ? "▲" : "▼", style = bull ? label.style_label_up : label.style_label_down,
-                                         color = color.new(color.white, 100), textcolor = bull ? #089981 : #F23645, size = size.small,
+                                         color = color.new(color.white, 100), textcolor = bull ? cGreen : cRed, size = size.small,
                                          tooltip = nm + " di " + where + "\n\nUji historis (8 dataset crypto, n=11.084): masuk di close bar PA dengan stop di ujung bar menghasilkan EV −0.02R (target 1R) / +0.05R (target 2R); PA di zona pivot tidak berbeda dari PA di level acak. Pakai sebagai konteks, bukan sinyal.", force_overlay = true))
 
                 string srTip = "Uji walk-forward 8 dataset crypto: sentuhan zona pivot memantul 54.6% vs level acak 55.6% (n≈4.000) — zona tidak lebih kuat dari level acak. Price action: EV ≈ 0R. Ditampilkan seminimal mungkin sebagai konteks; level yang berimpit dengan Elliott (★EW) paling layak diperhatikan."
@@ -1559,9 +1585,9 @@ if barstate.islast
             lineHist := lineH
 
             // Hitungan utama digambar dulu supaya label alternatif/historis yang menimpanya bisa dilewati.
-            float lblOver = drawCount(best1, showAlt ? best2 : na, startAlias, aP, cP, aB, aT, colMain, true, bpc, lineH, lbX1, lbX2, lbY1, lbY2, labs, lns)
+            float lblOver = drawCount(best1, showAlt ? best2 : na, startAlias, aP, cP, aB, aT, cMain, true, bpc, lineH, lbX1, lbX2, lbY1, lbY2, labs, lns)
             if showAlt and not na(best2)
-                lblOver := math.max(lblOver, drawCount(best2, best1, "", aP, cP, aB, aT, colAlt, false, bpc, lineH, lbX1, lbX2, lbY1, lbY2, labs, lns))
+                lblOver := math.max(lblOver, drawCount(best2, best1, "", aP, cP, aB, aT, cAlt, false, bpc, lineH, lbX1, lbX2, lbY1, lbY2, labs, lns))
             // Label level kanan dimulai setelah ujung kanan label gelombang yang paling dekat bar terakhir.
             int labelXR = labelX + math.min(math.max(0, int(math.ceil(lblOver))), 400)   // batas 500 bar ke depan
 
@@ -1570,7 +1596,7 @@ if barstate.islast
             // level di kanan digeser menjauhi titiknya, maksimal 4 baris; label tetap ditulis. Cek horizontal tidak dipakai: lebar
             // ruang kosong di kanan bar terakhir tidak bisa dibaca script (chart.right_visible_bar_time berhenti di bar terakhir).
             if pqX.size() > 0
-                color pc2 = color.new(colMain, 30)
+                color pc2 = color.new(cMain, tA(30))
                 for i = 0 to pqX.size() - 1
                     float py   = pqY.get(i)
                     float pBot = pqDn.get(i) ? py : py - lineH
@@ -1588,7 +1614,7 @@ if barstate.islast
                             pBot += d
                             py   += d
                     labs.push(label.new(pqX.get(i), py, pqT.get(i), style = pqDn.get(i) ? label.style_label_down : label.style_label_up,
-                         color = color.new(colMain, 100), textcolor = pc2, size = size.small, tooltip = pqTip.get(i), force_overlay = true))
+                         color = color.new(cMain, 100), textcolor = pc2, size = size.small, tooltip = pqTip.get(i), force_overlay = true))
 
             if tblCompact
                 table.cell(tbl, 0, 0, mainTxt + "\n" + invTxt, text_color = color.white, text_size = size.small, text_halign = text.align_left,
@@ -1596,4 +1622,4 @@ if barstate.islast
 
         if histC.size() > 0
             for h = 0 to histC.size() - 1
-                drawHist(histC.get(h), aP, cP, aB, aT, colHist, histSkip.get(h), hSkipIdx, bpc, lineHist, lbX1, lbX2, lbY1, lbY2, labs, lns)
+                drawHist(histC.get(h), aP, cP, aB, aT, cHist, histSkip.get(h), hSkipIdx, bpc, lineHist, lbX1, lbX2, lbY1, lbY2, labs, lns)
