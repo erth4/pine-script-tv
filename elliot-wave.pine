@@ -454,6 +454,17 @@ pickLevel(float base, float unit, float dir, array<float> fibs, string unitName,
             why := "semua rasio sudah dilewati harga, jadi dianggap berakhir di ekstrem saat ini"
     [out, why]
 
+// Hasil uji walk-forward (BTC 1W/1D/4h/1h, ETH 1D/4h, SOL 1D, BNB 1D; skala log; Nov 2026):
+// seberapa sering target gelombang yang sedang berjalan tercapai sebelum stop di sisi berlawanan,
+// dibanding peluang acak (random walk) untuk jarak target/stop yang sama.
+backtestNote(int k) =>
+    k == 3 ? "Uji historis W3: tercapai 37.3% vs acak 34.7% (+2.6 poin, n=1302)" :
+     k == 4 ? "Uji historis W4: tercapai 56.3% vs acak 60.3% (−4.0 poin, n=458) — target W4 tidak lebih baik dari acak" :
+     k == 5 ? "Uji historis W5: tercapai 56.8% vs acak 52.6% (+4.2 poin, n=711)" :
+     k == 6 ? "Uji historis A: tercapai 35.9% vs acak 36.5% (≈ acak, n=593)" :
+     k == 7 ? "Uji historis B: tercapai 57.8% vs acak 58.5% (≈ acak, n=1461)" :
+     "Uji historis C: tercapai 46.1% vs acak 44.3% (+1.8 poin, n=2031)"
+
 // pp di sini harga ruang hitung (log bila isLog); outY sudah dikonversi ke harga chart.
 projectPath(Count c, array<float> pp, array<int> pb, int legs, int nowBar, float tolPct, bool isLog) =>
     px = array.new<float>(9, na)
@@ -533,7 +544,7 @@ projectPath(Count c, array<float> pp, array<int> pb, int legs, int nowBar, float
         outX.push(x)
         outY.push(toPx(E, isLog))
         outN.push(waveName(k) + "?")
-        outW.push("Harga: " + why + (isLog ? " (skala log)" : "") + "\nWaktu: " + tWhy + ", " + str.tostring(math.max(dur, 1)) + " bar" + (live ? "\nGelombang ini sedang berjalan." : "\nBelum terjadi: dihitung dari ujung proyeksi sebelumnya."))
+        outW.push("Harga: " + why + (isLog ? " (skala log)" : "") + "\nWaktu: " + tWhy + ", " + str.tostring(math.max(dur, 1)) + " bar" + (live ? "\nGelombang ini sedang berjalan." : "\nBelum terjadi: dihitung dari ujung proyeksi sebelumnya.") + "\n\n" + backtestNote(k))
     [outX, outY, outN, outW]
 
 // Alasan titik ke-k dipilih, ditampilkan sebagai tooltip label.
