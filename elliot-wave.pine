@@ -861,10 +861,11 @@ pointTip(Count c, array<float> pp, array<float> cp, int k, bool isLive) =>
     t + "\n\nSkor hitungan: " + str.tostring(c.score, "0.00") + (useLog ? " · rasio skala log" : "")
 
 // Pivot yang dipakai kedua hitungan cukup diberi satu label: nama alternatif ditempel di label utama.
-// bpc = lebar satu karakter dalam bar: label yang teksnya akan melewati bar terakhir (menabrak label level di kanan)
-// ditulis ke arah kiri dari titiknya. bx*/by* = kotak perkiraan label hitungan yang sudah digambar; label alternatif
-// yang menimpa label utama tidak ditulis (garisnya tetap), karena hitungan utama digambar lebih dulu.
+// bpc = lebar satu karakter dalam bar. Label selalu di tengah titiknya; fungsi mengembalikan berapa bar teks label
+// melewati bar terakhir, supaya label level di kanan digeser secukupnya dan tidak tertimpa. bx*/by* = kotak perkiraan label gelombang yang sudah digambar (hitungan utama
+// digambar lebih dulu, lalu alternatif, lalu historis), dipakai untuk menggeser label yang akan menimpa.
 drawCount(Count c, Count other, string startAlias, array<float> pp, array<float> cp, array<int> pb, array<int> pt, color col, bool primary, float bpc, float lineH, array<float> bx1, array<float> bx2, array<float> by1, array<float> by2, array<label> labs, array<line> lns) =>
+    float over = 0.0
     for k = 0 to c.m
         int   idx    = c.sel.get(k)
         float y      = pp.get(idx)
@@ -890,21 +891,14 @@ drawCount(Count c, Count other, string startAlias, array<float> pp, array<float>
             tip := "Titik ini juga akhir gelombang " + startAlias + " dari pola historis sebelumnya.\n\n" + tip
         float w  = str.length(txt) * bpc * (primary ? 1.2 : 1.0)
         float lh = lineH * (primary ? 1.2 : 1.0)
-        bool  toLeft = x + w / 2 >= bar_index + 2
-        float l1 = toLeft ? x - w : x - w / 2
-        float l2 = toLeft ? x : x + w / 2
+        float l1 = x - w / 2
+        float l2 = x + w / 2
         float t1 = isHigh ? y : y - lh
         float t2 = t1 + lh
-        bool  clash = false
-        if not primary and bx1.size() > 0
-            for q = 0 to bx1.size() - 1
-                if l1 < bx2.get(q) and l2 > bx1.get(q) and t1 < by2.get(q) and t2 > by1.get(q)
-                    clash := true
-                    break
-        // Label utama tidak boleh hilang: bila menimpa label utama sebelumnya (dua pivot berdekatan), digeser menjauhi
-        // pivot (ke atas untuk high, ke bawah untuk low) maksimal 4 baris.
+        // Setiap titik gelombang tetap berlabel: bila menimpa label yang sudah ada, label digeser menjauhi pivot
+        // (ke atas untuk high, ke bawah untuk low) maksimal 4 baris; bila masih menimpa, tetap ditulis di posisi terakhir.
         float yl = y
-        if primary and bx1.size() > 0
+        if bx1.size() > 0
             for tries = 0 to 3
                 bool hitP = false
                 for q = 0 to bx1.size() - 1
@@ -917,23 +911,24 @@ drawCount(Count c, Count other, string startAlias, array<float> pp, array<float>
                 t1 += d
                 t2 += d
                 yl += d
-        if (primary or oj < 0) and not clash
+        if primary or oj < 0
             bx1.push(l1)
             bx2.push(l2)
             by1.push(t1)
             by2.push(t2)
-            labs.push(label.new(x, yl, txt, style = toLeft ? (isHigh ? label.style_label_lower_right : label.style_label_upper_right) : isHigh ? label.style_label_down : label.style_label_up,
+            over := math.max(over, l2 - bar_index)
+            labs.push(label.new(x, yl, txt, style = isHigh ? label.style_label_down : label.style_label_up,
                  color = color.new(col, 100), textcolor = col, size = primary ? size.normal : size.small,
                  tooltip = (primary ? "Hitungan utama\n" : "Hitungan alternatif\n") + tip, force_overlay = true))
         if k > 0
             int pidx = c.sel.get(k - 1)
             lns.push(line.new(pb.get(pidx), pp.get(pidx), x, y, color = col, width = primary ? 2 : 1,
                  style = primary ? line.style_solid : line.style_dashed, force_overlay = true))
-    c.m
+    over
 
 // skipIdx: pivot yang sudah dilabeli hitungan utama (titik 0-nya), labelnya digabung lewat startAlias.
-// Label yang menimpa label lain di registri bx*/by* (hitungan utama/alternatif, pola historis sebelumnya) tidak ditulis;
-// garis polanya tetap digambar.
+// Label yang menimpa label lain di registri bx*/by* (hitungan utama/alternatif, pola historis sebelumnya) digeser
+// menjauhi pivot, sama seperti drawCount.
 drawHist(Count c, array<float> pp, array<float> cp, array<int> pb, array<int> pt, color col, bool skipFirst, int skipIdx, float bpc, float lineH, array<float> bx1, array<float> bx2, array<float> by1, array<float> by2, array<label> labs, array<line> lns) =>
     for k = 0 to c.m
         int   idx    = c.sel.get(k)
@@ -947,18 +942,26 @@ drawHist(Count c, array<float> pp, array<float> cp, array<int> pb, array<int> pt
         float  l2    = x + w / 2
         float  t1    = isHigh ? y : y - lineH
         float  t2    = t1 + lineH
-        bool   clash = false
+        float  yl    = y
         if bx1.size() > 0
-            for q = 0 to bx1.size() - 1
-                if l1 < bx2.get(q) and l2 > bx1.get(q) and t1 < by2.get(q) and t2 > by1.get(q)
-                    clash := true
+            for tries = 0 to 3
+                bool hitH = false
+                for q = 0 to bx1.size() - 1
+                    if l1 < bx2.get(q) and l2 > bx1.get(q) and t1 < by2.get(q) and t2 > by1.get(q)
+                        hitH := true
+                        break
+                if not hitH
                     break
-        if not (k == 0 and skipFirst) and idx != skipIdx and not clash
+                float d = isHigh ? lineH : -lineH
+                t1 += d
+                t2 += d
+                yl += d
+        if not (k == 0 and skipFirst) and idx != skipIdx
             bx1.push(l1)
             bx2.push(l2)
             by1.push(t1)
             by2.push(t2)
-            labs.push(label.new(x, y, txt, style = isHigh ? label.style_label_down : label.style_label_up,
+            labs.push(label.new(x, yl, txt, style = isHigh ? label.style_label_down : label.style_label_up,
                  color = color.new(col, 100), textcolor = col, size = size.small,
                  tooltip = "Pola historis (selesai)\n" + pointTip(c, pp, cp, k, false), force_overlay = true))
         if k > 0
@@ -1238,10 +1241,10 @@ if barstate.islast
                 lns.push(line.new(aB.get(i - 1), aP.get(i - 1), aB.get(i), aP.get(i), color = color.new(color.gray, 60), width = 1, force_overlay = true))
 
         // Perkiraan lebar satu karakter dalam bar: ~7 px per karakter pada pane ~1200 px, dengan anggapan candle mengisi
-        // ~separuh lebar pane. Ruang kosong di kanan bar terakhir tidak terbaca (chart.right_visible_bar_time berhenti di
-        // bar terakhir), jadi lebar pane sebenarnya dalam bar tidak diketahui. Bila candle mengisi hampir seluruh pane,
-        // lebar ini kebesaran: label alternatif/historis lebih sering dilewati dan label utama lebih sering digeser.
-        float bpc   = math.max(visBars, 20) * 0.012
+        // pane. Ruang kosong di kanan bar terakhir tidak terbaca (chart.right_visible_bar_time berhenti di bar terakhir);
+        // bila ruang itu lebar, lebar teks jadi kekecilan dan label berdekatan bisa sedikit bersinggungan. Perkiraan yang
+        // terlalu besar lebih buruk: label tergeser jauh dari pivotnya karena dianggap menimpa label yang sebenarnya jauh.
+        float bpc   = math.max(visBars, 20) * 0.006
         if showAlt and not na(best2)
             table.cell(tbl, 0, tblCompact ? 1 : 2, "Alternatif: " + describe(best2, cP), text_color = colAlt, text_size = size.small, text_halign = text.align_left)
 
@@ -1556,31 +1559,36 @@ if barstate.islast
             lineHist := lineH
 
             // Hitungan utama digambar dulu supaya label alternatif/historis yang menimpanya bisa dilewati.
-            drawCount(best1, showAlt ? best2 : na, startAlias, aP, cP, aB, aT, colMain, true, bpc, lineH, lbX1, lbX2, lbY1, lbY2, labs, lns)
+            float lblOver = drawCount(best1, showAlt ? best2 : na, startAlias, aP, cP, aB, aT, colMain, true, bpc, lineH, lbX1, lbX2, lbY1, lbY2, labs, lns)
             if showAlt and not na(best2)
-                drawCount(best2, best1, "", aP, cP, aB, aT, colAlt, false, bpc, lineH, lbX1, lbX2, lbY1, lbY2, labs, lns)
+                lblOver := math.max(lblOver, drawCount(best2, best1, "", aP, cP, aB, aT, colAlt, false, bpc, lineH, lbX1, lbX2, lbY1, lbY2, labs, lns))
+            // Label level kanan dimulai setelah ujung kanan label gelombang yang paling dekat bar terakhir.
+            int labelXR = labelX + math.min(math.max(0, int(math.ceil(lblOver))), 400)   // batas 500 bar ke depan
 
-            placedY = layoutRightLabels(rqY, rqT, rqC, rqTip, labelX, lineH, close, labs)
-            // Label proyeksi (teks di tengah titik, di atas untuk label_down / di bawah untuk label_up) dilewati bila sebaris
-            // dengan label level di kanan; garis proyeksinya tetap, dan harganya biasanya sama dengan label target di sebelahnya.
-            // Cek horizontal tidak dipakai: lebar ruang kosong di kanan bar terakhir tidak bisa dibaca script
-            // (chart.right_visible_bar_time berhenti di bar terakhir), jadi lebar teks dalam bar tidak bisa diperkirakan.
+            placedY = layoutRightLabels(rqY, rqT, rqC, rqTip, labelXR, lineH, close, labs)
+            // Label proyeksi (teks di tengah titik, di atas untuk label_down / di bawah untuk label_up) yang sebaris dengan label
+            // level di kanan digeser menjauhi titiknya, maksimal 4 baris; label tetap ditulis. Cek horizontal tidak dipakai: lebar
+            // ruang kosong di kanan bar terakhir tidak bisa dibaca script (chart.right_visible_bar_time berhenti di bar terakhir).
             if pqX.size() > 0
                 color pc2 = color.new(colMain, 30)
                 for i = 0 to pqX.size() - 1
                     float py   = pqY.get(i)
                     float pBot = pqDn.get(i) ? py : py - lineH
-                    float pTop = pBot + lineH
-                    bool  hit  = false
                     if placedY.size() > 0
-                        for j = 0 to placedY.size() - 1
-                            float ry = placedY.get(j)
-                            if pBot < ry + lineH and ry < pTop
-                                hit := true
+                        for tries = 0 to 3
+                            bool hit = false
+                            for j = 0 to placedY.size() - 1
+                                float ry = placedY.get(j)
+                                if pBot < ry + lineH and ry < pBot + lineH
+                                    hit := true
+                                    break
+                            if not hit
                                 break
-                    if not hit
-                        labs.push(label.new(pqX.get(i), py, pqT.get(i), style = pqDn.get(i) ? label.style_label_down : label.style_label_up,
-                             color = color.new(colMain, 100), textcolor = pc2, size = size.small, tooltip = pqTip.get(i), force_overlay = true))
+                            float d = pqDn.get(i) ? lineH : -lineH
+                            pBot += d
+                            py   += d
+                    labs.push(label.new(pqX.get(i), py, pqT.get(i), style = pqDn.get(i) ? label.style_label_down : label.style_label_up,
+                         color = color.new(colMain, 100), textcolor = pc2, size = size.small, tooltip = pqTip.get(i), force_overlay = true))
 
             if tblCompact
                 table.cell(tbl, 0, 0, mainTxt + "\n" + invTxt, text_color = color.white, text_size = size.small, text_halign = text.align_left,
