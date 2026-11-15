@@ -15,6 +15,8 @@ winK      = input.int(20, "Jumlah pivot yang dianalisis", minval = 6, maxval = 4
 allowDiag = input.bool(true, "Izinkan diagonal (overlap W4–W1)", group = grpC,
      tooltip = "Overlap hanya diterima jika bentuknya menyempit: W3 < W1, W4 < W2, dan W5 < W3.")
 showAlt   = input.bool(true, "Tampilkan hitungan alternatif", group = grpC)
+anchorPen = input.float(0.08, "Penalti titik 0 bukan ekstrem", minval = 0, step = 0.01, group = grpC,
+     tooltip = "Pengurang skor bila pivot sejenis tepat sebelum titik 0 lebih ekstrem (titik 0 hanya lower high / higher low). Dikalibrasi di ETH 1D/4h dan BTC 1D: akurasi target sama, hitungan lebih stabil antar-pivot. 0 = mati.")
 useHtf    = input.bool(true, "Bias arah swing timeframe lebih tinggi", group = grpC,
      tooltip = "HTF otomatis satu tingkat di atas chart (1h→4h, 4h→D, D→W, W→M). Hitungan yang searah swing HTF diberi skor lebih tinggi.")
 useLog    = input.bool(true, "Hitung rasio di skala log (persen)", group = grpC,
@@ -71,6 +73,8 @@ histPivots   = input.int(120, "Jumlah pivot historis", minval = 20, maxval = 400
 histWin      = input.int(20, "Jendela pivot per pola", minval = 8, maxval = 40, group = grpH,
      tooltip = "Batas jumlah pivot yang boleh dicakup satu pola historis. Naikkan kalau pola besar tidak terdeteksi.")
 histMinScore = input.float(0.45, "Skor minimum pola historis", minval = 0, maxval = 1, step = 0.05, group = grpH)
+termRet      = input.float(0.382, "Konfirmasi akhir pola (× rentang pola)", minval = 0, maxval = 1, step = 0.05, group = grpH,
+     tooltip = "Pola historis dibuang bila titik akhirnya dilewati harga sebelum harga sempat koreksi sejauh ini × rentang pola. Mencegah W5/C ditandai di swing kecil padahal harga masih lanjut ke ekstrem baru. 0 = mati.")
 
 grpV = "Tampilan"
 showTargets = input.bool(true, "Tampilkan target & level batal", group = grpV)
@@ -88,6 +92,38 @@ colAlt      = input.color(color.gray, "Hitungan alternatif", group = grpV)
 colHist     = input.color(#26A69A, "Pola historis", group = grpV)
 colTgt      = input.color(#FF9800, "Target", group = grpV)
 colInv      = input.color(#F23645, "Level batal", group = grpV)
+
+// ───────── Moving average ─────────
+grpMA = "Moving average"
+ma1On  = input.bool(true, "MA 1", inline = "ma1", group = grpMA)
+ma1Typ = input.string("EMA", "", options = ["SMA", "EMA", "WMA", "RMA", "HMA", "VWMA"], inline = "ma1", group = grpMA)
+ma1Len = input.int(20, "", minval = 1, inline = "ma1", group = grpMA)
+ma1Src = input.source(close, "", inline = "ma1", group = grpMA)
+ma1Col = input.color(#FDD835, "", inline = "ma1", group = grpMA)
+ma2On  = input.bool(true, "MA 2", inline = "ma2", group = grpMA)
+ma2Typ = input.string("EMA", "", options = ["SMA", "EMA", "WMA", "RMA", "HMA", "VWMA"], inline = "ma2", group = grpMA)
+ma2Len = input.int(50, "", minval = 1, inline = "ma2", group = grpMA)
+ma2Src = input.source(close, "", inline = "ma2", group = grpMA)
+ma2Col = input.color(#26C6DA, "", inline = "ma2", group = grpMA)
+ma3On  = input.bool(true, "MA 3", inline = "ma3", group = grpMA)
+ma3Typ = input.string("SMA", "", options = ["SMA", "EMA", "WMA", "RMA", "HMA", "VWMA"], inline = "ma3", group = grpMA)
+ma3Len = input.int(200, "", minval = 1, inline = "ma3", group = grpMA)
+ma3Src = input.source(close, "", inline = "ma3", group = grpMA)
+ma3Col = input.color(#E040FB, "", inline = "ma3", group = grpMA)
+
+// Tipe berasal dari input, jadi cabang switch yang jalan sama di setiap bar dan state ta.* tetap konsisten.
+maValue(string typ, float src, simple int len) =>
+    switch typ
+        "SMA"  => ta.sma(src, len)
+        "EMA"  => ta.ema(src, len)
+        "WMA"  => ta.wma(src, len)
+        "RMA"  => ta.rma(src, len)
+        "HMA"  => ta.hma(src, len)
+        => ta.vwma(src, len)
+
+plot(ma1On ? maValue(ma1Typ, ma1Src, ma1Len) : na, "MA 1", color = ma1Col, linewidth = 1, force_overlay = true)
+plot(ma2On ? maValue(ma2Typ, ma2Src, ma2Len) : na, "MA 2", color = ma2Col, linewidth = 1, force_overlay = true)
+plot(ma3On ? maValue(ma3Typ, ma3Src, ma3Len) : na, "MA 3", color = ma3Col, linewidth = 2, force_overlay = true)
 
 // ───────── Warna adaptif tema ─────────
 // Latar chart gelap (luminans < 0.5): warna dicampur ke putih dan transparansi teks/garis dikurangi supaya kontras.
@@ -470,7 +506,7 @@ lenAt(array<float> pp, array<int> sel, int i) =>
 
 // isLive: titik ke-m masih berjalan, jadi aturannya tetap dicek tapi rasionya tidak dinilai.
 // Pola historis (isLive = false) menilai semua gelombang termasuk yang terakhir.
-evalCount(array<float> pp, array<int> sel, int m, int sgn, float winRange, bool allowDg, int hDir, bool isLive) =>
+evalCount(array<float> pp, array<int> sel, int m, int sgn, float winRange, bool allowDg, int hDir, bool isLive, int minIdx) =>
     int sm = isLive ? m : m + 1
     vals = array.new<float>(m + 1, 0.0)
     for i = 0 to m
@@ -573,7 +609,11 @@ evalCount(array<float> pp, array<int> sel, int m, int sgn, float winRange, bool 
     // Koreksi (m >= 6) bergerak melawan impuls, jadi derajat induknya berarah -sgn.
     int   parentDir = m <= 5 ? sgn : -sgn
     float htfAdj    = hDir == 0 ? 0.0 : parentDir == hDir ? 0.05 : -0.05
-    float score = ok ? 0.55 * fit + 0.35 * span + 0.10 * m / 8.0 + htfAdj - (diag ? 0.05 : 0.0) - (trunc ? 0.15 : 0.0) - (thin ? 0.03 : 0.0) : na
+    // Titik 0 yang bukan ekstrem (pivot sejenis tepat sebelumnya lebih ekstrem) biasanya gelombang 2/B derajat lebih tinggi,
+    // sehingga puncak/dasar sebenarnya tidak berlabel. Diberi penalti, bukan dibuang, agar tetap dipakai bila tidak ada alternatif.
+    int   j0      = sel.get(0) - 2
+    float anchAdj = j0 >= minIdx and sgn * pp.get(j0) < sgn * pp.get(sel.get(0)) ? anchorPen : 0.0
+    float score = ok ? 0.55 * fit + 0.35 * span + 0.10 * m / 8.0 + htfAdj - (diag ? 0.05 : 0.0) - (trunc ? 0.15 : 0.0) - (thin ? 0.03 : 0.0) - anchAdj : na
     [score, diag, trunc, thin]
 
 // DFS mundur dari endIdx: pilih titik k dari pivot yang lebih tua, berselang 2 agar tipe high/low tetap bergantian.
@@ -600,7 +640,7 @@ searchBest(array<float> pp, int endIdx, int startBound, int m, int sgn, float wi
             sel.set(k, j - 2)
             continue
         if k == 0
-            [sc, dg, tr, th] = evalCount(pp, sel, m, sgn, winRange, allowDg, hDir, isLive)
+            [sc, dg, tr, th] = evalCount(pp, sel, m, sgn, winRange, allowDg, hDir, isLive, startBound)
             if not na(sc) and (na(best) or sc > best.score)
                 best := Count.new(sc, m, sgn, dg, tr, th, sel.copy())
             sel.set(0, j - 2)
@@ -1199,6 +1239,28 @@ if barstate.islast
                         int sgn = mi == 0 ? aT.get(e) : -aT.get(e)
                         if e - i >= m
                             Count c = searchBest(cP, e, i, m, sgn, hHi - hLo, allowDiag, 0, false)
+                            // Akhir pola harus bertahan: bila dilewati sebelum harga koreksi >= termRet × rentang pola, gelombang terakhirnya
+                            // sebenarnya masih memanjang (mis. W5 di 2565 padahal harga lanjut ke 2806). Pola seperti ini dibuang.
+                            if not na(c) and termRet > 0
+                                int   endI = c.sel.get(c.m)
+                                int   dT   = m == 5 ? sgn : -sgn
+                                float tHi  = cP.get(c.sel.get(0))
+                                float tLo  = tHi
+                                for q = 1 to c.m
+                                    tHi := math.max(tHi, cP.get(c.sel.get(q)))
+                                    tLo := math.min(tLo, cP.get(c.sel.get(q)))
+                                float need   = termRet * (tHi - tLo)
+                                float maxRet = 0.0
+                                if endI < n - 1
+                                    for q = endI + 1 to n - 1
+                                        float dv = dT * (cP.get(q) - cP.get(endI))
+                                        if dv > 0
+                                            if maxRet < need
+                                                c := na
+                                            break
+                                        maxRet := math.max(maxRet, -dv)
+                                        if maxRet >= need
+                                            break
                             if not na(c) and (na(hb) or c.score > hb.score)
                                 hb := c
                 if not na(hb) and hb.score >= histMinScore
