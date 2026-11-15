@@ -24,6 +24,13 @@ projTol   = input.float(3.0, "Toleransi konfluens proyeksi (%)", minval = 0.5, s
 confTol   = input.float(1.0, "Toleransi konfluens (%)", minval = 0.1, step = 0.1, group = grpC,
      tooltip = "Target utama yang berjarak sedekat ini dengan level hitungan alternatif ditandai ★.")
 
+grpM = "Momentum & konfirmasi"
+showMom  = input.bool(true, "Info divergensi RSI & momentum W3", group = grpM,
+     tooltip = "Hanya informasi, tidak memengaruhi skor. Uji walk-forward (7.189 pembalikan) tidak menemukan keunggulan dari divergensi.")
+rsiLen   = input.int(14, "Panjang RSI", minval = 2, group = grpM)
+showConf = input.bool(true, "Level konfirmasi akhir gelombang", group = grpM,
+     tooltip = "Level di mana zigzag berbalik, artinya gelombang yang sedang berjalan dianggap selesai dan hitungan bergeser.")
+
 grpH = "Historis"
 showHist     = input.bool(true, "Label pola historis", group = grpH)
 histPivots   = input.int(120, "Jumlah pivot historis", minval = 20, maxval = 400, group = grpH,
@@ -34,10 +41,11 @@ histMinScore = input.float(0.45, "Skor minimum pola historis", minval = 0, maxva
 
 grpV = "Tampilan"
 showTargets = input.bool(true, "Tampilkan target & level batal", group = grpV)
+showPassed  = input.bool(false, "Tampilkan target yang sudah terlewati (✓)", group = grpV)
 projLegs    = input.int(3, "Jumlah gelombang proyeksi", minval = 0, maxval = 6, group = grpV,
      tooltip = "Jalur putus-putus ke masa depan, termasuk gelombang yang sedang berjalan. 0 = mati. Harga dari rasio Fibonacci standar, waktu dari durasi gelombang sebanding (W3≈W1, W4≈W2, W5≈W1, B≈A, C≈A).")
 showZz      = input.bool(false, "Tampilkan zigzag mentah", group = grpV)
-tblPosIn    = input.string("Kanan bawah", "Posisi tabel", options = ["Kanan atas", "Kanan bawah", "Kiri atas", "Kiri bawah"], group = grpV)
+tblPosIn    = input.string("Kiri bawah", "Posisi tabel", options = ["Kanan atas", "Kanan bawah", "Kiri atas", "Kiri bawah"], group = grpV)
 colMain     = input.color(#2962FF, "Hitungan utama", group = grpV)
 colAlt      = input.color(color.gray, "Hitungan alternatif", group = grpV)
 colHist     = input.color(#26A69A, "Pola historis", group = grpV)
@@ -90,20 +98,24 @@ htfDir    = useHtf and htfTf != "" ? htfDirRaw : 0
 var pP = array.new<float>()
 var pB = array.new<int>()
 var pT = array.new<int>()   // 1 = high, -1 = low
+var pR = array.new<float>() // RSI di bar pivot
+rsiV = ta.rsi(close, rsiLen)
 var int   zzDir = 0
 var float iHi   = na
 var float iLo   = na
 var int   iHiB  = na
 var int   iLoB  = na
 
-addPivot(array<float> pp, array<int> pb, array<int> pt, float price, int bar, int typ) =>
+addPivot(array<float> pp, array<int> pb, array<int> pt, array<float> pr, float price, int bar, int typ, float rsi) =>
     pp.push(price)
     pb.push(bar)
     pt.push(typ)
+    pr.push(rsi)
     if pp.size() > 500
         pp.shift()
         pb.shift()
         pt.shift()
+        pr.shift()
     pp.size()
 
 if not na(thr)
@@ -115,13 +127,14 @@ if not na(thr)
             iLo  := low
             iLoB := bar_index
         if iHi >= iLo * (1 + thr) and iHiB != iLoB
+            // RSI bar awal tidak tersimpan; pivot pertama memakai RSI saat ini (hanya memengaruhi info momentum pivot awal).
             if iHiB > iLoB
-                addPivot(pP, pB, pT, iLo, iLoB, -1)
-                addPivot(pP, pB, pT, iHi, iHiB, 1)
+                addPivot(pP, pB, pT, pR, iLo, iLoB, -1, rsiV)
+                addPivot(pP, pB, pT, pR, iHi, iHiB, 1, rsiV)
                 zzDir := 1
             else
-                addPivot(pP, pB, pT, iHi, iHiB, 1)
-                addPivot(pP, pB, pT, iLo, iLoB, -1)
+                addPivot(pP, pB, pT, pR, iHi, iHiB, 1, rsiV)
+                addPivot(pP, pB, pT, pR, iLo, iLoB, -1, rsiV)
                 zzDir := -1
     else
         float lastP = pP.last()
@@ -129,15 +142,17 @@ if not na(thr)
             if high > lastP
                 pP.set(pP.size() - 1, high)
                 pB.set(pB.size() - 1, bar_index)
+                pR.set(pR.size() - 1, rsiV)
             else if low <= lastP * (1 - thr)
-                addPivot(pP, pB, pT, low, bar_index, -1)
+                addPivot(pP, pB, pT, pR, low, bar_index, -1, rsiV)
                 zzDir := -1
         else
             if low < lastP
                 pP.set(pP.size() - 1, low)
                 pB.set(pB.size() - 1, bar_index)
+                pR.set(pR.size() - 1, rsiV)
             else if high >= lastP * (1 + thr)
-                addPivot(pP, pB, pT, high, bar_index, 1)
+                addPivot(pP, pB, pT, pR, high, bar_index, 1, rsiV)
                 zzDir := 1
 
 // ───────── Penghitungan gelombang ─────────
@@ -260,6 +275,9 @@ evalCount(array<float> pp, array<int> sel, int m, int sgn, float winRange, bool 
         if sm > 7
             s += (rB >= 0.382 and rB <= 0.886) or (rB >= 1.0 and rB <= 1.382) ? 1.0 : 0.5
             c += 1
+        // C yang masih berjalan tapi sudah > 2.618×A hampir pasti salah hitung (lebih mungkin impuls baru).
+        if m >= 8 and isLive and lens.get(8) / lens.get(6) > 2.618
+            ok := false
         // C yang sudah selesai: pada zigzag (B < 0.786A) C wajib melewati ujung A.
         if sm > 8
             if rB < 0.786 and vals.get(8) >= vals.get(6)
@@ -542,7 +560,8 @@ projectPath(Count c, array<float> pp, array<int> pb, int legs, int nowBar, float
         px.set(k, E)
         bx.set(k, x)
         outX.push(x)
-        outY.push(toPx(E, isLog))
+        // Semua rasio sudah terlewati: titik proyeksi = titik live, tidak perlu label ganda.
+        outY.push(live and E == liveC ? na : toPx(E, isLog))
         outN.push(waveName(k) + "?")
         outW.push("Harga: " + why + (isLog ? " (skala log)" : "") + "\nWaktu: " + tWhy + ", " + str.tostring(math.max(dur, 1)) + " bar" + (live ? "\nGelombang ini sedang berjalan." : "\nBelum terjadi: dihitung dari ujung proyeksi sebelumnya.") + "\n\n" + backtestNote(k))
     [outX, outY, outN, outW]
@@ -641,7 +660,7 @@ drawHist(Count c, array<float> pp, array<float> cp, array<int> pb, array<int> pt
 var labs = array.new<label>()
 var lns  = array.new<line>()
 tblPos   = tblPosIn == "Kanan atas" ? position.top_right : tblPosIn == "Kiri atas" ? position.top_left : tblPosIn == "Kiri bawah" ? position.bottom_left : position.bottom_right
-var tbl  = table.new(tblPos, 1, 4, bgcolor = color.new(color.black, 15), border_width = 1, force_overlay = true)
+var tbl  = table.new(tblPos, 1, 5, bgcolor = color.new(color.black, 15), border_width = 1, force_overlay = true)
 varip string lastKey = ""
 
 if barstate.islast
@@ -651,7 +670,7 @@ if barstate.islast
     for ln in lns
         ln.delete()
     lns.clear()
-    table.clear(tbl, 0, 0, 0, 3)
+    table.clear(tbl, 0, 0, 0, 4)
 
     int n = pP.size()
     if n >= 5
@@ -744,8 +763,12 @@ if barstate.islast
                 table.cell(tbl, 0, 3, "Swing HTF (" + htfTf + "): " + (htfDir == 1 ? "naik" : htfDir == -1 ? "turun" : "belum terbentuk"),
                      text_color = color.silver, text_size = size.small, text_halign = text.align_left)
 
-            // Label target/batal ditaruh di kanan titik proyeksi terjauh agar tidak menimpa label proyeksi.
+            // Label target/batal/konfirmasi ditaruh di kanan titik proyeksi terjauh agar tidak menimpa label proyeksi,
+            // dan semuanya lewat drawnY/drawnL supaya level yang berdekatan digabung ke satu label.
             int labelX = bar_index + 20
+            drawnY = array.new<float>()
+            drawnL = array.new<label>()
+            float mergeTol = (pHi - pLo) * 0.015
             if projLegs > 0
                 [prX, prY, prN, prW] = projectPath(best1, cP, pB, projLegs, bar_index, projTol, useLog)
                 int   lx = pB.get(best1.sel.get(best1.m))
@@ -754,7 +777,7 @@ if barstate.islast
                 for i = 0 to prX.size() - 1
                     int   x = prX.get(i)
                     float y = prY.get(i)
-                    if y > 0
+                    if not na(y) and y > 0
                         lns.push(line.new(lx, ly, x, y, color = pc, width = 2, style = line.style_dotted, force_overlay = true))
                         labs.push(label.new(x, y, prN.get(i) + " " + str.tostring(y, format.mintick),
                              style = y >= ly ? label.style_label_down : label.style_label_up,
@@ -763,6 +786,35 @@ if barstate.islast
                         lx := x
                         ly := y
                         labelX := math.max(labelX, x + 10)
+
+            int   liveIdx = best1.sel.get(best1.m)
+            float liveExt = pP.get(liveIdx)
+            int   legDir  = pT.get(liveIdx)
+            string wv     = waveName(best1.m)
+
+            if showMom
+                // Bandingkan ujung gelombang live dengan ujung gelombang searah sebelumnya (m-2).
+                int   prevIdx = best1.sel.get(best1.m - 2)
+                bool  div     = legDir == 1 ? liveExt > pP.get(prevIdx) and pR.get(liveIdx) < pR.get(prevIdx) : liveExt < pP.get(prevIdx) and pR.get(liveIdx) > pR.get(prevIdx)
+                string mt = "Momentum: " + (div ? "divergensi RSI di " + wv + " vs " + waveName(best1.m - 2) : "tanpa divergensi RSI di " + wv)
+                if best1.m >= 5
+                    float r3 = best1.sgn * (pR.get(best1.sel.get(3)) - 50)
+                    float r5 = best1.sgn * (pR.get(best1.sel.get(5)) - 50)
+                    mt += " · W3 " + (r3 >= r5 ? "momentum terkuat ✓" : "lebih lemah dari W5 ⚠")
+                table.cell(tbl, 0, 4, mt, text_color = color.silver, text_size = size.small, text_halign = text.align_left,
+                     tooltip = "Hanya informasi. Uji walk-forward 8 dataset crypto: masuk saat pembalikan setelah W5/C dengan divergensi EV −0.02R (1R) / −0.06R (2R), tanpa divergensi −0.03R / +0.04R — tidak ada keunggulan. W5 dengan W3 bukan momentum terkuat sedikit lebih buruk (−0.10R), belum signifikan.")
+
+            if showConf
+                // Gelombang live dianggap selesai saat zigzag berbalik sejauh threshold dari ekstremnya.
+                float confLv = legDir == 1 ? liveExt * (1 - thr) : liveExt * (1 + thr)
+                int   cx2    = math.min(labelX, bar_index + 490)
+                lns.push(line.new(pB.get(liveIdx), confLv, cx2, confLv, color = color.new(color.teal, 20), style = line.style_dashed, force_overlay = true))
+                label cl = label.new(cx2, confLv, "Konfirmasi " + wv + " selesai jika " + (legDir == 1 ? "< " : "> ") + str.tostring(confLv, format.mintick),
+                     style = label.style_label_left, color = color.new(color.teal, 100), textcolor = color.teal, size = size.small,
+                     tooltip = "Zigzag berbalik di level ini (" + str.tostring(thr * 100, "0.0") + "% dari ekstrem " + str.tostring(liveExt, format.mintick) + "), sehingga gelombang " + wv + " ditutup dan hitungan bergerak ke gelombang berikutnya.\nLevel ikut bergeser bila harga membuat ekstrem baru.\n\nUji historis: masuk tepat saat pembalikan ini, stop di ekstrem, menghasilkan EV ≈ 0R (1R: −0.02R, 2R: +0.05R; n=7.189). Konfirmasi ini bukan sinyal entry.", force_overlay = true)
+                labs.push(cl)
+                drawnY.push(confLv)
+                drawnL.push(cl)
 
             string key = str.tostring(best1.sgn) + "|" + str.tostring(best1.m) + "|" + str.tostring(pB.get(best1.sel.get(0)))
             if lastKey != "" and key != lastKey
@@ -779,10 +831,6 @@ if barstate.islast
                 int   x2      = math.min(labelX, bar_index + 490)
                 float liveP   = pP.get(best1.sel.get(best1.m))
                 int   liveDir = pT.get(best1.sel.get(best1.m))
-                // Level yang jaraknya < 1.5% rentang harga digabung ke satu label agar teks tidak bertumpuk.
-                float mergeTol = (pHi - pLo) * 0.015
-                drawnY = array.new<float>()
-                drawnL = array.new<label>()
                 for i = 0 to ip.size() - 1
                     float y = ip.get(i)
                     if y > 0
@@ -795,8 +843,8 @@ if barstate.islast
                 for i = 0 to tp.size() - 1
                     float y = tp.get(i)
                     // Proyeksi linear gelombang turun yang panjang bisa jatuh di bawah nol; tidak bermakna dan merusak skala.
-                    if y > 0
-                        bool passed = liveDir * (liveP - y) >= 0
+                    bool passed = liveDir * (liveP - y) >= 0
+                    if y > 0 and (showPassed or not passed)
                         bool conf   = false
                         if altLv.size() > 0
                             for a in altLv
